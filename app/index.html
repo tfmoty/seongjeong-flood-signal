@@ -1,0 +1,2023 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
+  <!-- 버전: STEP5 + 우회카메라 (4번 버튼 포함) -->
+  <meta name="build" content="v10-sumo" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>성정지하차도 침수 예측 시뮬레이션 · 3D</title>
+
+  <!-- CesiumJS: 로컬 파일 우선, 실패 시 CDN 폴백 -->
+  <script src="./config.js"></script>  <!-- 없어도 동작(지형만 기본값) -->
+  <script>
+    // Cesium이 Workers/Assets를 찾을 기준 경로 (로컬 우선)
+    window.CESIUM_BASE_URL = "./cesium/";
+
+    // 로컬 Cesium이 있으면 그걸 쓰고, 없으면 CDN 시도
+    (function loadCesium() {
+      const sources = [
+        "./cesium/Cesium.js",  // 로컬 (같이 제공된 폴더)
+        "https://cesium.com/downloads/cesiumjs/releases/1.131/Build/Cesium/Cesium.js",
+        "https://unpkg.com/cesium@1.131.0/Build/Cesium/Cesium.js",
+      ];
+      const css = [
+        "./cesium/Widgets/widgets.css",
+        "https://cesium.com/downloads/cesiumjs/releases/1.131/Build/Cesium/Widgets/widgets.css",
+        "https://unpkg.com/cesium@1.131.0/Build/Cesium/Widgets/widgets.css",
+      ];
+      let idx = 0;
+      function tryLoad() {
+        if (idx >= sources.length) {
+          document.getElementById("ltext").textContent =
+            "Cesium 라이브러리를 불러오지 못했습니다. 인터넷 연결을 확인하거나 cesium 폴더를 함께 두세요.";
+          document.querySelector(".spinner").style.display = "none";
+          return;
+        }
+        // CDN으로 넘어가면 base URL도 CDN으로
+        if (idx > 0) {
+          window.CESIUM_BASE_URL = sources[idx].replace("Cesium.js", "");
+        }
+        // CSS
+        const link = document.createElement("link");
+        link.rel = "stylesheet";
+        link.href = css[idx];
+        document.head.appendChild(link);
+        // JS
+        const s = document.createElement("script");
+        s.src = sources[idx];
+        s.onload = () => { window.__cesiumReady && window.__cesiumReady(); };
+        s.onerror = () => { idx++; tryLoad(); };
+        document.head.appendChild(s);
+      }
+      window.__startCesiumLoad = tryLoad;
+    })();
+  </script>
+
+  <style>
+    :root {
+      --bg: #0a0e14;
+      --panel: rgba(16, 22, 32, 0.92);
+      --panel-border: rgba(90, 120, 160, 0.28);
+      --ink: #e8eef6;
+      --ink-dim: #8ba0b8;
+      --accent: #3ea6ff;
+      --safe: #34d399;
+      --warn: #fbbf24;
+      --danger: #f43f5e;
+      --mono: "SF Mono", "JetBrains Mono", ui-monospace, "Menlo", monospace;
+      --sans: "Pretendard", -apple-system, "Segoe UI", "Malgun Gothic", sans-serif;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      width: 100%; height: 100%;
+      overflow: hidden;
+      background: var(--bg);
+      font-family: var(--sans);
+      color: var(--ink);
+    }
+
+    #cesiumContainer {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+    }
+
+    /* Cesium 기본 위젯 툴바 숨김 (발표용 클린 화면) */
+    .cesium-viewer-bottom,
+    .cesium-viewer-animationContainer,
+    .cesium-viewer-timelineContainer,
+    .cesium-viewer-fullscreenContainer,
+    .cesium-viewer-toolbar { display: none !important; }
+
+    /* ── 상단 타이틀 바 ── */
+    .titlebar {
+      position: absolute; top: 0; left: 0; right: 0;
+      padding: 16px 22px;
+      display: flex; align-items: baseline; gap: 14px;
+      background: linear-gradient(180deg, rgba(6,10,16,0.85) 0%, rgba(6,10,16,0) 100%);
+      z-index: 10; pointer-events: none;
+    }
+    .titlebar h1 {
+      font-size: 17px; font-weight: 700; letter-spacing: -0.01em;
+    }
+    .titlebar .sub {
+      font-size: 12px; color: var(--ink-dim);
+      font-family: var(--mono);
+    }
+    .titlebar .tag {
+      margin-left: auto;
+      font-size: 11px; font-family: var(--mono);
+      color: var(--accent);
+      border: 1px solid var(--panel-border);
+      padding: 4px 9px; border-radius: 5px;
+      background: rgba(62,166,255,0.08);
+    }
+
+    /* ── 좌하단 정보 패널 ── */
+    .infopanel {
+      position: absolute; left: 18px; bottom: 18px;
+      width: 300px;
+      background: var(--panel);
+      border: 1px solid var(--panel-border);
+      border-radius: 12px;
+      backdrop-filter: blur(12px);
+      padding: 16px 18px;
+      z-index: 10;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+    }
+    .infopanel .ip-label {
+      font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+      color: var(--ink-dim); font-family: var(--mono);
+      margin-bottom: 4px;
+    }
+    .infopanel .ip-name {
+      font-size: 18px; font-weight: 700; margin-bottom: 2px;
+    }
+    .infopanel .ip-addr {
+      font-size: 11px; color: var(--ink-dim); margin-bottom: 14px;
+    }
+    .spec-grid {
+      display: grid; grid-template-columns: 1fr 1fr;
+      gap: 1px;
+      background: var(--panel-border);
+      border: 1px solid var(--panel-border);
+      border-radius: 8px; overflow: hidden;
+    }
+    .spec-cell {
+      background: var(--panel);
+      padding: 9px 11px;
+    }
+    .spec-cell .k {
+      font-size: 10px; color: var(--ink-dim);
+      font-family: var(--mono); margin-bottom: 2px;
+    }
+    .spec-cell .v {
+      font-size: 14px; font-weight: 600;
+    }
+    .spec-cell .v small { font-size: 10px; color: var(--ink-dim); font-weight: 400; }
+
+    .risk-flags {
+      margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px;
+    }
+    .flag {
+      font-size: 10px; font-family: var(--mono);
+      padding: 3px 8px; border-radius: 20px;
+      border: 1px solid;
+    }
+    .flag.age { color: var(--warn); border-color: rgba(251,191,36,0.4); background: rgba(251,191,36,0.08); }
+    .flag.grade { color: var(--danger); border-color: rgba(244,63,94,0.4); background: rgba(244,63,94,0.08); }
+    .flag.type { color: var(--accent); border-color: rgba(62,166,255,0.4); background: rgba(62,166,255,0.08); }
+
+    /* ── 우상단 카메라 프리셋 ── */
+    .cam-presets {
+      position: absolute; top: 62px; right: 18px;
+      display: flex; flex-direction: column; gap: 8px;
+      z-index: 10;
+    }
+    .cam-btn {
+      font-family: var(--mono); font-size: 11px;
+      color: var(--ink); text-align: left;
+      background: var(--panel);
+      border: 1px solid var(--panel-border);
+      border-radius: 8px;
+      padding: 9px 12px; width: 132px;
+      cursor: pointer;
+      backdrop-filter: blur(12px);
+      transition: all 0.15s ease;
+    }
+    .cam-btn:hover {
+      border-color: var(--accent);
+      background: rgba(62,166,255,0.1);
+    }
+    .cam-btn .cb-key { color: var(--ink-dim); margin-right: 7px; }
+    .cam-btn.highlight {
+      border-color: var(--danger);
+      background: rgba(244,63,94,0.15);
+      animation: pulse 1.2s infinite;
+    }
+
+    /* SUMO 검증 버튼 */
+    .sumo-btn {
+      position: absolute; top: 250px; right: 18px;
+      font-family: var(--sans); font-size: 12px; font-weight: 600;
+      color: #06111f; background: var(--warn); border: none;
+      border-radius: 8px; padding: 10px 14px; cursor: pointer; z-index: 12;
+      box-shadow: 0 4px 16px rgba(251,191,36,0.3);
+      transition: all 0.15s;
+    }
+    .sumo-btn:hover { background: #fcd34d; transform: translateY(-1px); }
+
+    /* SUMO 오버레이 */
+    .sumo-overlay {
+      position: fixed; inset: 0; z-index: 100;
+      background: rgba(4,8,14,0.82); backdrop-filter: blur(6px);
+      display: none; align-items: center; justify-content: center;
+    }
+    .sumo-overlay.show { display: flex; }
+    .sumo-modal {
+      width: min(900px, 94vw); max-height: 92vh; overflow-y: auto;
+      background: var(--panel); border: 1px solid var(--panel-border);
+      border-radius: 16px; padding: 24px 28px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+    }
+    .sumo-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+    .sumo-title { font-size: 19px; font-weight: 800; color: var(--ink); }
+    .sumo-close {
+      background: rgba(90,120,160,0.15); border: 1px solid var(--panel-border);
+      color: var(--ink); width: 32px; height: 32px; border-radius: 8px;
+      cursor: pointer; font-size: 15px;
+    }
+    .sumo-close:hover { border-color: var(--danger); }
+    .sumo-sub { font-size: 12px; color: var(--ink-dim); font-family: var(--mono); margin-bottom: 18px; }
+    .sumo-metrics { display: flex; align-items: center; gap: 16px; margin-bottom: 16px; }
+    .sm-card {
+      flex: 1; background: rgba(90,120,160,0.07); border: 1px solid var(--panel-border);
+      border-radius: 12px; padding: 16px; text-align: center;
+    }
+    .sm-k { font-size: 12px; color: var(--ink-dim); font-family: var(--mono); margin-bottom: 8px; }
+    .sm-v { font-size: 24px; font-weight: 800; margin-bottom: 6px; }
+    .sm-v.red { color: var(--danger); }
+    .sm-v.green { color: var(--safe); }
+    .sm-d { font-size: 11px; color: var(--ink-dim); }
+    .sm-arrow { font-size: 24px; color: var(--warn); font-weight: 700; }
+    .sumo-headline {
+      text-align: center; font-size: 15px; color: var(--ink);
+      background: rgba(52,211,153,0.1); border: 1px solid rgba(52,211,153,0.3);
+      border-radius: 10px; padding: 12px; margin-bottom: 18px;
+    }
+    .sumo-headline b { color: var(--safe); font-size: 17px; }
+    .sumo-graph { width: 100%; border-radius: 10px; background: #faf9f6; margin-bottom: 14px; }
+    .sumo-note {
+      font-size: 12px; color: var(--ink-dim); line-height: 1.6;
+      padding: 12px 14px; background: rgba(90,120,160,0.06);
+      border-left: 3px solid var(--accent); border-radius: 6px;
+    }
+
+    /* ── 로딩 오버레이 ── */
+    .loading {
+      position: absolute; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      flex-direction: column; gap: 16px;
+      background: var(--bg);
+      z-index: 100;
+      transition: opacity 0.6s ease;
+    }
+    .loading.hidden { opacity: 0; pointer-events: none; }
+    .loading .spinner {
+      width: 34px; height: 34px;
+      border: 3px solid var(--panel-border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.9s linear infinite;
+    }
+    .loading .ltext {
+      font-family: var(--mono); font-size: 12px; color: var(--ink-dim);
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── 범례 (하단 중앙) ── */
+    .legend {
+      position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%);
+      display: flex; gap: 18px;
+      background: var(--panel);
+      border: 1px solid var(--panel-border);
+      border-radius: 10px;
+      padding: 10px 18px;
+      z-index: 10;
+      backdrop-filter: blur(12px);
+      font-size: 11px; font-family: var(--mono);
+    }
+    .legend .lg-item { display: flex; align-items: center; gap: 7px; color: var(--ink-dim); }
+    .legend .dot { width: 10px; height: 10px; border-radius: 3px; }
+
+    /* ── 침수 컨트롤 패널 ── */
+    .flood-panel {
+      position: absolute; right: 18px; bottom: 18px;
+      width: 300px;
+      background: var(--panel);
+      border: 1px solid var(--panel-border);
+      border-radius: 12px;
+      backdrop-filter: blur(12px);
+      padding: 16px 18px;
+      z-index: 12;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+    }
+    .fp-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 14px;
+    }
+    .fp-title { font-size: 14px; font-weight: 700; }
+    .fp-stage {
+      font-size: 12px; font-weight: 700; font-family: var(--mono);
+      padding: 3px 12px; border-radius: 20px;
+      color: var(--safe); border: 1px solid var(--safe);
+      background: rgba(52,211,153,0.1);
+      transition: all 0.3s ease;
+    }
+    .fp-stage.watch  { color: var(--safe);   border-color: var(--safe);   background: rgba(52,211,153,0.1); }
+    .fp-stage.caution{ color: var(--warn);   border-color: var(--warn);   background: rgba(251,191,36,0.12); }
+    .fp-stage.danger { color: var(--danger); border-color: var(--danger); background: rgba(244,63,94,0.14); }
+    .fp-stage.flooded{ color:#fff; border-color: var(--danger); background: var(--danger); }
+
+    .fp-rain { margin-bottom: 14px; }
+    .fp-rain-label {
+      display: flex; justify-content: space-between;
+      font-size: 11px; color: var(--ink-dim); font-family: var(--mono);
+      margin-bottom: 7px;
+    }
+    .fp-rain-label span:last-child { color: var(--accent); font-weight: 600; }
+    #rainSlider {
+      width: 100%; height: 5px; border-radius: 3px;
+      -webkit-appearance: none; appearance: none;
+      background: linear-gradient(90deg, #3ea6ff 0%, #fbbf24 55%, #f43f5e 100%);
+      outline: none; cursor: pointer;
+    }
+    #rainSlider::-webkit-slider-thumb {
+      -webkit-appearance: none; appearance: none;
+      width: 16px; height: 16px; border-radius: 50%;
+      background: #fff; border: 2px solid var(--accent);
+      cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+    }
+    #rainSlider::-moz-range-thumb {
+      width: 16px; height: 16px; border-radius: 50%;
+      background: #fff; border: 2px solid var(--accent); cursor: pointer;
+    }
+
+    .fp-metrics {
+      display: grid; grid-template-columns: 1fr 1fr 1fr;
+      gap: 1px; background: var(--panel-border);
+      border: 1px solid var(--panel-border);
+      border-radius: 8px; overflow: hidden; margin-bottom: 12px;
+    }
+    .fp-metric { background: var(--panel); padding: 8px 9px; text-align: center; }
+    .fpm-k { font-size: 9px; color: var(--ink-dim); font-family: var(--mono); margin-bottom: 3px; }
+    .fpm-v { font-size: 15px; font-weight: 700; }
+    .fpm-v small { font-size: 9px; color: var(--ink-dim); font-weight: 400; margin-left: 1px; }
+    .fpm-v.alert { color: var(--danger); }
+
+    .fp-control-alert {
+      display: flex; align-items: center; gap: 8px;
+      font-size: 11px; color: var(--ink-dim);
+      padding: 8px 10px; border-radius: 7px;
+      background: rgba(90,120,160,0.08);
+      border: 1px solid var(--panel-border);
+      margin-bottom: 12px;
+      transition: all 0.3s ease;
+    }
+    .fp-control-alert .ca-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--safe); flex-shrink: 0;
+    }
+    .fp-control-alert.triggered {
+      color: #fff; background: rgba(244,63,94,0.18);
+      border-color: var(--danger);
+    }
+    .fp-control-alert.triggered .ca-dot {
+      background: var(--danger);
+      animation: pulse 1s infinite;
+    }
+    @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.3;} }
+
+    .fp-buttons { display: flex; gap: 8px; }
+    .fp-btn {
+      flex: 1; font-family: var(--sans); font-size: 12px; font-weight: 600;
+      color: var(--ink); background: rgba(90,120,160,0.12);
+      border: 1px solid var(--panel-border); border-radius: 7px;
+      padding: 9px; cursor: pointer; transition: all 0.15s ease;
+    }
+    .fp-btn:hover { border-color: var(--accent); background: rgba(62,166,255,0.12); }
+    .fp-btn.play { background: var(--accent); color: #06111f; border-color: var(--accent); }
+    .fp-btn.play:hover { background: #5cb4ff; }
+    .fp-btn.play.playing { background: var(--warn); border-color: var(--warn); }
+
+    /* 통행 상태 히어로 */
+    .fp-hero {
+      border-radius: 10px; padding: 12px 14px; margin-bottom: 13px;
+      background: rgba(52,211,153,0.1);
+      border: 1px solid rgba(52,211,153,0.35);
+      transition: all 0.3s ease;
+    }
+    .fp-hero.blocked {
+      background: var(--danger);
+      border-color: var(--danger);
+      animation: heroFlip 0.4s ease;
+    }
+    @keyframes heroFlip { 0%{transform:scale(0.96);} 100%{transform:scale(1);} }
+    .fp-hero-status { font-size: 16px; font-weight: 800; color: var(--safe); }
+    .fp-hero.blocked .fp-hero-status { color: #fff; }
+    .fp-hero-sub { font-size: 11px; color: var(--ink-dim); margin-top: 2px; }
+    .fp-hero.blocked .fp-hero-sub { color: rgba(255,255,255,0.9); }
+
+    /* 프리셋 칩 */
+    .fp-presets { display: flex; gap: 5px; margin-bottom: 12px; flex-wrap: wrap; }
+    .preset-chip {
+      flex: 1; min-width: 0;
+      font-family: var(--mono); font-size: 10px; font-weight: 600;
+      color: var(--ink-dim); background: rgba(90,120,160,0.08);
+      border: 1px solid var(--panel-border); border-radius: 6px;
+      padding: 6px 4px; cursor: pointer; white-space: nowrap;
+      transition: all 0.15s ease;
+    }
+    .preset-chip:hover { border-color: var(--accent); color: var(--ink); }
+    .preset-chip.active { background: var(--accent); color: #06111f; border-color: var(--accent); }
+    .preset-chip.warn { border-color: rgba(251,191,36,0.4); color: var(--warn); }
+    .preset-chip.warn.active { background: var(--warn); color: #1a1400; border-color: var(--warn); }
+
+    /* 유입 vs 배수 인포그래픽 */
+    .fp-balance {
+      background: rgba(90,120,160,0.06);
+      border: 1px solid var(--panel-border);
+      border-radius: 8px; padding: 10px 11px; margin-bottom: 12px;
+    }
+    .bal-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+    .bal-row:last-of-type { margin-bottom: 0; }
+    .bal-k { font-size: 10px; color: var(--ink-dim); font-family: var(--mono); width: 26px; flex-shrink: 0; }
+    .bal-track {
+      flex: 1; height: 8px; border-radius: 4px;
+      background: rgba(90,120,160,0.15); overflow: hidden;
+    }
+    .bal-fill { height: 100%; border-radius: 4px; transition: width 0.2s ease; }
+    .bal-fill.inflow { background: linear-gradient(90deg,#3ea6ff,#f43f5e); }
+    .bal-fill.drain { background: var(--safe); }
+    .bal-v { font-size: 11px; font-family: var(--mono); color: var(--ink); width: 30px; text-align: right; flex-shrink: 0; }
+    .bal-note { font-size: 10px; color: var(--ink-dim); margin-top: 8px; text-align: center; font-family: var(--mono); }
+    .bal-note b { color: var(--warn); }
+
+    /* 배속 + 경과 */
+    .fp-speed {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 12px;
+    }
+    .speed-btns { display: flex; gap: 4px; }
+    .spd {
+      font-family: var(--mono); font-size: 10px; font-weight: 600;
+      color: var(--ink-dim); background: rgba(90,120,160,0.08);
+      border: 1px solid var(--panel-border); border-radius: 5px;
+      padding: 4px 8px; cursor: pointer; transition: all 0.15s ease;
+    }
+    .spd:hover { border-color: var(--accent); color: var(--ink); }
+    .spd.active { background: var(--accent); color: #06111f; border-color: var(--accent); }
+    .elapsed { font-size: 11px; font-family: var(--mono); color: var(--ink-dim); }
+
+    /* 신호 상황판 PIP (좌상단, CCTV 모니터 스타일) */
+    .signal-pip {
+      position: absolute; left: 18px; top: 62px;
+      width: 260px;
+      background: rgba(8, 12, 20, 0.94);
+      border: 1px solid var(--panel-border);
+      border-radius: 12px;
+      backdrop-filter: blur(12px);
+      padding: 14px 16px;
+      z-index: 11;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+    }
+    .pip-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 14px;
+    }
+    .pip-title { font-size: 12px; font-weight: 700; color: var(--ink); }
+    .pip-mode {
+      font-size: 10px; font-family: var(--mono); font-weight: 600;
+      padding: 3px 9px; border-radius: 12px;
+      color: var(--safe); border: 1px solid var(--safe);
+      background: rgba(52,211,153,0.1);
+      transition: all 0.3s ease;
+    }
+    .pip-mode.emergency {
+      color: #fff; border-color: var(--danger); background: var(--danger);
+      animation: pulse 1s infinite;
+    }
+    .pip-body { display: flex; gap: 14px; margin-bottom: 12px; }
+    .pip-signal { flex: 1; text-align: center; }
+    .ps-label { font-size: 10px; color: var(--ink-dim); font-family: var(--mono); margin-bottom: 8px; }
+    .traffic-light {
+      display: inline-flex; flex-direction: column; gap: 5px;
+      background: #0f141d; border: 1px solid #2b3444;
+      border-radius: 8px; padding: 7px 8px;
+    }
+    .tl-lamp {
+      width: 20px; height: 20px; border-radius: 50%;
+      background: #1a1f2b; transition: all 0.2s ease;
+    }
+    .tl-lamp.red.on    { background: #f43f5e; box-shadow: 0 0 12px #f43f5e; }
+    .tl-lamp.yellow.on { background: #fbbf24; box-shadow: 0 0 12px #fbbf24; }
+    .tl-lamp.green.on  { background: #34d399; box-shadow: 0 0 12px #34d399; }
+    .ps-phase {
+      font-size: 11px; font-family: var(--mono); font-weight: 600;
+      color: var(--ink); margin-top: 8px;
+    }
+    .pip-cycle {
+      font-size: 10px; font-family: var(--mono); color: var(--ink-dim);
+      text-align: center; padding-top: 10px;
+      border-top: 1px solid var(--panel-border);
+      transition: color 0.3s ease;
+    }
+    .pip-cycle.fast { color: var(--warn); }
+
+    /* 우회 경로 패널 (신호 PIP 아래) */
+    .detour-panel {
+      position: absolute; left: 18px; top: 288px;
+      width: 260px;
+      background: rgba(8, 12, 20, 0.94);
+      border: 1px solid var(--panel-border);
+      border-radius: 12px;
+      backdrop-filter: blur(12px);
+      padding: 13px 16px;
+      z-index: 11;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+    }
+    .dp-title { font-size: 12px; font-weight: 700; margin-bottom: 9px; }
+    .dp-status {
+      font-size: 12px; color: var(--safe); font-weight: 600;
+      text-align: center; padding: 8px; border-radius: 7px;
+      background: rgba(52,211,153,0.1); border: 1px solid rgba(52,211,153,0.3);
+    }
+    .dp-status.active { color: var(--danger); background: rgba(244,63,94,0.12); border-color: rgba(244,63,94,0.4); }
+    .dp-compare { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+    .dp-route {
+      display: flex; align-items: center; justify-content: space-between;
+      font-size: 11px; padding: 7px 10px; border-radius: 6px;
+    }
+    .dp-route.blocked { background: rgba(244,63,94,0.1); }
+    .dp-route.detour { background: rgba(52,211,153,0.1); }
+    .dpr-k { font-family: var(--mono); color: var(--ink-dim); }
+    .dp-route.blocked .dpr-v { color: var(--danger); font-weight: 600; text-decoration: line-through; }
+    .dp-route.detour .dpr-v { color: var(--safe); font-weight: 600; }
+    .dp-detour-note {
+      font-size: 10px; color: var(--ink-dim); font-family: var(--mono);
+      margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--panel-border);
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <div id="cesiumContainer"></div>
+
+  <!-- 로딩 -->
+  <div class="loading" id="loading">
+    <div class="spinner"></div>
+    <div class="ltext" id="ltext">지형 데이터를 불러오는 중…</div>
+  </div>
+
+  <!-- 타이틀 -->
+  <div class="titlebar">
+    <h1>성정지하차도</h1>
+    <span class="sub">Seongjeong Underpass · 36.8153, 127.1474</span>
+    <span class="tag">STEP 5 · SUMO검증 반영 (v10)</span>
+  </div>
+
+  <!-- 카메라 프리셋 -->
+  <div class="cam-presets">
+    <button class="cam-btn" data-cam="bird"><span class="cb-key">1</span>부감 시점</button>
+    <button class="cam-btn" data-cam="side"><span class="cb-key">2</span>측면 시점</button>
+    <button class="cam-btn" data-cam="entry"><span class="cb-key">3</span>진입부 시점</button>
+    <button class="cam-btn" data-cam="detour"><span class="cb-key">4</span>우회 경로</button>
+  </div>
+
+  <!-- SUMO 검증 결과 버튼 -->
+  <button class="sumo-btn" id="sumoBtn">📊 SUMO 검증 결과</button>
+
+  <!-- SUMO 검증 결과 오버레이 -->
+  <div class="sumo-overlay" id="sumoOverlay">
+    <div class="sumo-modal">
+      <div class="sumo-head">
+        <span class="sumo-title">SUMO 미시 시뮬레이션 검증 결과</span>
+        <button class="sumo-close" id="sumoClose">✕</button>
+      </div>
+      <div class="sumo-sub">국가표준노드링크 → SUMO (노드 693 · 엣지 1,423 · 신호 13개소) · 성정지하차도 통제 시나리오</div>
+      <div class="sumo-metrics">
+        <div class="sm-card">
+          <div class="sm-k">현행 (고정주기)</div>
+          <div class="sm-v red">총지체 227.6</div>
+          <div class="sm-d">우회차량 평균 119분 · 미완주 77대</div>
+        </div>
+        <div class="sm-arrow">→</div>
+        <div class="sm-card">
+          <div class="sm-k">스마트교차로 (감응)</div>
+          <div class="sm-v green">총지체 15.4</div>
+          <div class="sm-d">우회차량 평균 4.3분 · 전량 완주</div>
+        </div>
+      </div>
+      <div class="sumo-headline">총지체 <b>93.2% 감소</b> · 미완주 77대 → 0대 (교차로 1곳 감응 제어만으로)</div>
+      <img class="sumo-graph" src="smart_signal_effect.svg" alt="지체 추이 그래프" />
+      <div class="sumo-note">핵심: 통제 전 차량을 미리 우회시키는 것이 아니라, 우회로 교차로(방죽안오거리) 신호를 실시간 감응 제어로 전환하는 것이 효과의 본질입니다.</div>
+    </div>
+  </div>
+
+  <!-- 정보 패널 -->
+  <div class="infopanel">
+    <div class="ip-label">대상 시설 · Target Facility</div>
+    <div class="ip-name">성정지하차도</div>
+    <div class="ip-addr">충남 천안시 서북구 성정동 609-199</div>
+
+    <div class="spec-grid">
+      <div class="spec-cell"><div class="k">연장 LENGTH</div><div class="v">72.4 <small>m</small></div></div>
+      <div class="spec-cell"><div class="k">폭 WIDTH</div><div class="v">6.1 <small>m</small></div></div>
+      <div class="spec-cell"><div class="k">깊이 DEPTH</div><div class="v">2.5 <small>m</small></div></div>
+      <div class="spec-cell"><div class="k">준공 BUILT</div><div class="v">1983 <small>년</small></div></div>
+    </div>
+
+    <div class="risk-flags">
+      <span class="flag type">철도·하천 횡단형</span>
+      <span class="flag grade">3종 · 관리 사각지대</span>
+      <span class="flag age">경과 41년 · 노후</span>
+    </div>
+  </div>
+
+  <!-- 신호 상황판 PIP (STEP 4) - CCTV 모니터 스타일 -->
+  <div class="signal-pip" id="signalPip">
+    <div class="pip-header">
+      <span class="pip-title">◉ 실시간 신호 제어</span>
+      <span class="pip-mode" id="pipMode">평상 운영</span>
+    </div>
+    <div class="pip-body">
+      <!-- 지하차도 방향 신호 -->
+      <div class="pip-signal">
+        <div class="ps-label">지하차도 방향</div>
+        <div class="traffic-light" id="tlUnderpass">
+          <span class="tl-lamp red"></span>
+          <span class="tl-lamp yellow"></span>
+          <span class="tl-lamp green"></span>
+        </div>
+        <div class="ps-phase" id="phaseUnderpass">녹색 28초</div>
+      </div>
+      <!-- 우회 방향 신호 -->
+      <div class="pip-signal">
+        <div class="ps-label">우회로 (방죽안오거리)</div>
+        <div class="traffic-light" id="tlDetour">
+          <span class="tl-lamp red"></span>
+          <span class="tl-lamp yellow"></span>
+          <span class="tl-lamp green"></span>
+        </div>
+        <div class="ps-phase" id="phaseDetour">적색 대기</div>
+      </div>
+    </div>
+    <div class="pip-cycle" id="pipCycle">주기: 정상 (60초)</div>
+  </div>
+
+  <!-- 우회 경로 패널 (STEP 5) -->
+  <div class="detour-panel" id="detourPanel">
+    <div class="dp-title">🧭 우회 경로 안내</div>
+    <div class="dp-status" id="dpStatus">지하차도 정상 통행</div>
+    <div class="dp-compare" id="dpCompare" style="display:none">
+      <div class="dp-route blocked">
+        <span class="dpr-k">지하차도</span>
+        <span class="dpr-v">통제됨</span>
+      </div>
+      <div class="dp-route detour">
+        <span class="dpr-k">주 우회로</span>
+        <span class="dpr-v">대흥로·중앙로 · 지연 +20초(중앙값)</span>
+      </div>
+      <div class="dp-detour-note" id="dpNote">
+        재배정 146,150 OD쌍 · 도달불가 0 · 우회 집중·병목 형성
+      </div>
+    </div>
+  </div>
+
+  <!-- 범례 -->
+  <div class="legend">
+    <div class="lg-item"><span class="dot" style="background:#3ea6ff"></span>지하차도</div>
+    <div class="lg-item"><span class="dot" style="background:#9ca3af"></span>경부선 철도</div>
+    <div class="lg-item"><span class="dot" style="background:#38bdf8"></span>천안천</div>
+  </div>
+
+  <!-- 침수 컨트롤 패널 (STEP 3) -->
+  <div class="flood-panel" id="floodPanel">
+    <div class="fp-header">
+      <span class="fp-title">침수 시뮬레이션</span>
+      <span class="fp-stage" id="fpStage">관심</span>
+    </div>
+
+    <!-- 통행 상태 히어로 -->
+    <div class="fp-hero" id="fpHero">
+      <div class="fp-hero-status" id="heroStatus">통행 가능</div>
+      <div class="fp-hero-sub" id="heroSub">수위 통제기준(5cm) 이하</div>
+    </div>
+
+    <!-- 강수량 프리셋 -->
+    <div class="fp-presets" id="presets">
+      <button class="preset-chip" data-rain="10">약한비 10</button>
+      <button class="preset-chip" data-rain="22">배수한계 22</button>
+      <button class="preset-chip warn" data-rain="25">선제대응 25</button>
+      <button class="preset-chip warn" data-rain="30">호우주의보 30</button>
+      <button class="preset-chip" data-rain="50">폭우 50</button>
+    </div>
+
+    <div class="fp-rain">
+      <div class="fp-rain-label">
+        <span>강수량</span>
+        <span id="rainValue">30 mm/h</span>
+      </div>
+      <input type="range" id="rainSlider" min="0" max="100" value="30" step="1" />
+    </div>
+
+    <!-- 유입 vs 배수 인포그래픽 -->
+    <div class="fp-balance">
+      <div class="bal-row">
+        <span class="bal-k">유입</span>
+        <div class="bal-track"><div class="bal-fill inflow" id="barInflow"></div></div>
+        <span class="bal-v" id="valInflow">0</span>
+      </div>
+      <div class="bal-row">
+        <span class="bal-k">배수</span>
+        <div class="bal-track"><div class="bal-fill drain" id="barDrain"></div></div>
+        <span class="bal-v" id="valDrain">0</span>
+      </div>
+      <div class="bal-note" id="balNote">배수 한계 <b id="breakeven">22</b> mm/h <span style="opacity:0.6">· 배수값 가정(실측 보정 예정)</span></div>
+    </div>
+
+    <div class="fp-metrics">
+      <div class="fp-metric">
+        <div class="fpm-k">현재 수위</div>
+        <div class="fpm-v" id="mLevel">0<small>cm</small></div>
+      </div>
+      <div class="fp-metric">
+        <div class="fpm-k">순변화</div>
+        <div class="fpm-v" id="mNet">0<small>cm/분</small></div>
+      </div>
+      <div class="fp-metric">
+        <div class="fpm-k" id="mTimeK">통행불가까지</div>
+        <div class="fpm-v" id="mTime">—</div>
+      </div>
+    </div>
+
+    <!-- 배속 + 경과시간 -->
+    <div class="fp-speed">
+      <div class="speed-btns" id="speedBtns">
+        <button class="spd" data-spd="0.5">0.5×</button>
+        <button class="spd active" data-spd="1">1×</button>
+        <button class="spd" data-spd="2">2×</button>
+        <button class="spd" data-spd="5">5×</button>
+        <button class="spd" data-spd="10">10×</button>
+      </div>
+      <div class="elapsed" id="elapsed">경과 0분</div>
+    </div>
+
+    <div class="fp-buttons">
+      <button class="fp-btn play" id="btnPlay">▶ 시작</button>
+      <button class="fp-btn" id="btnReset">↺ 리셋</button>
+    </div>
+  </div>
+
+  <script>
+    // Cesium 로드 완료 후 실행
+    window.__cesiumReady = function() {
+    // ─────────────────────────────────────────────
+    //  성정지하차도 침수 시뮬레이션 · STEP 2
+    //  실제 지형 위에 대상 시설 배치 (토큰 불필요)
+    // ─────────────────────────────────────────────
+
+    // 실제 좌표 (카카오맵 실측 기준)
+    const SITE = {
+      center:   { lon: 127.1474, lat: 36.8153 },  // 성정동 609-199
+      westEntry:{ lon: 127.1475, lat: 36.8157 },  // 서쪽 진입 (고구려광고)
+      eastExit: { lon: 127.1487, lat: 36.8154 },  // 동쪽 진출 (파워카)
+    };
+
+    // 토큰 없이 작동: Ion 기본 자산 대신 오픈 이미지리 사용
+    // (Ion 토큰을 넣으면 고해상 지형으로 업그레이드 가능 — 주석 참고)
+    // Cesium Ion 토큰 (실제 지형 데이터 접근용)
+    Cesium.Ion.defaultAccessToken = window.CESIUM_ION_TOKEN || "";  // config.js 에서 주입 (저장소에는 토큰 없음)
+
+    const viewer = new Cesium.Viewer("cesiumContainer", {
+      baseLayerPicker: false,
+      geocoder: false,
+      homeButton: false,
+      sceneModePicker: false,
+      navigationHelpButton: false,
+      animation: false,
+      timeline: false,
+      fullscreenButton: false,
+      infoBox: false,
+      selectionIndicator: false,
+      shadows: true,
+    });
+
+    // ★ 실제 지형(고도) 활성화
+    Cesium.createWorldTerrainAsync({
+      requestVertexNormals: true,
+      requestWaterMask: true,
+    }).then((terrainProvider) => {
+      viewer.terrainProvider = terrainProvider;
+      console.log("✓ 실제 지형(Cesium World Terrain) 로드 완료");
+      return buildStructures();
+    }).catch((err) => {
+      console.warn("지형 로드 실패, 폴백 고도로 구조물 배치:", err);
+      buildStructures();
+    });
+
+    // 고해상 위성 이미지 (토큰으로 Bing Aerial 사용 가능, 실패 시 Esri)
+    try {
+      const esriImagery = new Cesium.UrlTemplateImageryProvider({
+        url: "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        maximumLevel: 19,
+        credit: "Esri World Imagery",
+        enablePickFeatures: false,
+      });
+      viewer.imageryLayers.addImageryProvider(esriImagery);
+    } catch (err) {
+      console.warn("위성 이미지 로드 실패:", err);
+    }
+
+    // 렌더 에러가 나도 죽지 않고 계속 시도
+    viewer.scene.renderError.addEventListener((scene, error) => {
+      console.warn("렌더 경고(무시하고 계속):", error);
+      scene.requestRender();
+    });
+
+    const C = Cesium;
+    const carto = (lon, lat, h = 0) => C.Cartesian3.fromDegrees(lon, lat, h);
+    window.__viewer = viewer; // 디버깅용
+    window.__flood = { levelRatio: 0, currentCm: 0 }; // 침수 상태 (기본값)
+
+    // 렌더 품질
+    viewer.scene.globe.enableLighting = true;
+    viewer.scene.skyAtmosphere.show = true;
+    viewer.scene.fog.enabled = true;
+    // 구조물이 항상 보이도록 지형 깊이테스트 OFF (지표 위 단면 모형 방식)
+    viewer.scene.globe.depthTestAgainstTerrain = false;
+
+
+    // ── 대상 지하차도 마커 (STEP 2에서 실제 3D 구조물로 대체 예정) ──
+    viewer.entities.add({
+      name: "성정지하차도",
+      position: carto(SITE.center.lon, SITE.center.lat, 0),
+      point: {
+        pixelSize: 16,
+        color: C.Color.fromCssColorString("#3ea6ff"),
+        outlineColor: C.Color.WHITE,
+        outlineWidth: 2,
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        heightReference: C.HeightReference.CLAMP_TO_GROUND,
+      },
+      label: {
+        text: "성정지하차도",
+        font: "600 14px Pretendard, sans-serif",
+        fillColor: C.Color.WHITE,
+        showBackground: true,
+        backgroundColor: C.Color.fromCssColorString("#0a0e14").withAlpha(0.85),
+        backgroundPadding: new C.Cartesian2(9, 6),
+        pixelOffset: new C.Cartesian2(0, -26),
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        style: C.LabelStyle.FILL,
+        heightReference: C.HeightReference.CLAMP_TO_GROUND,
+      },
+    });
+
+    // ── 진입/진출부 마커 ──
+    const endpoints = [
+      { p: SITE.westEntry, label: "서쪽 진입부", color: "#34d399" },
+      { p: SITE.eastExit,  label: "동쪽 진출부", color: "#34d399" },
+    ];
+    endpoints.forEach(e => {
+      viewer.entities.add({
+        position: carto(e.p.lon, e.p.lat, 0),
+        point: {
+          pixelSize: 9,
+          color: C.Color.fromCssColorString(e.color),
+          outlineColor: C.Color.WHITE,
+          outlineWidth: 1.5,
+          heightReference: C.HeightReference.CLAMP_TO_GROUND,
+        },
+        label: {
+          text: e.label,
+          font: "500 11px Pretendard, sans-serif",
+          fillColor: C.Color.fromCssColorString("#cbd5e1"),
+          pixelOffset: new C.Cartesian2(0, -16),
+          heightReference: C.HeightReference.CLAMP_TO_GROUND,
+          disableDepthTestDistance: 5000,
+        },
+      });
+    });
+
+    // (지하차도 경로선은 STEP 5의 '원래 경로'로 통합 — 중복 제거)
+
+    // ═══════════════════════════════════════════════
+    //  STEP 2 · 지하차도 3D 구조물 (방식 B: 반투명 단면 부각)
+    //  실제 제원: 연장 72.4m · 폭 6.1m · 깊이 2.5m
+    // ═══════════════════════════════════════════════
+
+    const SPEC = { length: 72.4, width: 6.1, depth: 2.5, rampLen: 30 };
+
+    // ═══════════════════════════════════════════════
+    //  침수 예측 CONFIG (실측 데이터 확보 시 이 값만 보정)
+    // ═══════════════════════════════════════════════
+    const FLOOD_CONFIG = {
+      // 유입: 강수강도(mm/h) → 유입 상승속도(cm/min) 환산 계수
+      // ※ 실측 수위계 데이터로 회귀분석해 보정 예정 (현재는 문헌 기반 데모값)
+      // 값을 낮춰 시연 중 수위 변화를 눈으로 따라갈 수 있게 조정
+      regionCoef: 0.07,
+      // 노후 보정: 경과년수 반영 (오래될수록 유입 대비 불리)
+      ageYears: 41,
+      inflowAgeFactor: 1 + 41 / 50,   // ≈ 1.82 (노후로 유입 영향 가중)
+      // ★ 배수 능력: 펌프가 물을 빼내는 속도 (cm/min)
+      //   ⚠️ 실측값 아님 — 성정지하차도 실제 펌프 용량은 천안시 정보공개청구 대상.
+      //   현재는 "배수 한계 강수량 ≈ 22mm/h(호우주의보 근처)"가 되도록 역산한 데모 가정값.
+      //   실측 확보 시 이 두 값만 교체하면 됨.
+      drainRateBase: 4.7,             // 정상 펌프 배수속도 가정 (cm/min)
+      pumpEfficiency: 0.6,            // 노후(41년) 배수 효율 가정
+      // 통제 기준
+      limitCm: SPEC.depth * 100,      // 통행 불가(완전 침수) 수위 = 250cm
+      controlCm: 5,                   // 천안시 차량 통제 기준 (2026년 15cm→5cm)
+      // 통제 단계 임계 (분)
+      stageWatch: 15,
+      stageCaution: 5,
+    };
+
+    // 실제 배수속도 = 기본 × 효율
+    FLOOD_CONFIG.drainRate = FLOOD_CONFIG.drainRateBase * FLOOD_CONFIG.pumpEfficiency; // ≈ 1.82 cm/min
+
+    // 배수 한계 강수강도: 유입 = 배수가 되는 강수량 (이걸 넘으면 침수 시작)
+    // rainfall × regionCoef × ageFactor = drainRate  →  rainfall = drainRate / (regionCoef × ageFactor)
+    FLOOD_CONFIG.breakevenRain =
+      FLOOD_CONFIG.drainRate / (FLOOD_CONFIG.regionCoef * FLOOD_CONFIG.inflowAgeFactor);
+
+    // ── 침수 예측 함수 (유입 − 배수 = 순변화) ──
+    function predictFlood(rainfallMmH, currentLevelCm) {
+      // 유입 속도 (cm/min)
+      const inflowRate = rainfallMmH * FLOOD_CONFIG.regionCoef * FLOOD_CONFIG.inflowAgeFactor;
+      // 배수 속도 (물이 있을 때만 작동, 수위 0이면 뺄 물 없음)
+      const drainRate = currentLevelCm > 0 ? FLOOD_CONFIG.drainRate : 0;
+      // 순 변화속도 (양수=차오름, 음수=빠짐)
+      const netRate = inflowRate - drainRate;
+
+      const controlCm = FLOOD_CONFIG.controlCm;   // 5cm (통제 발령)
+      const limitCm = FLOOD_CONFIG.limitCm;       // 250cm (완전 침수)
+      const controlTriggered = currentLevelCm >= controlCm;
+
+      // 상황별 남은 시간 계산
+      let timeToControl = Infinity;   // 통제(5cm)까지 (차오르는 중, 아직 통제 전)
+      let timeToFlood = Infinity;     // 완전침수(250cm)까지 (통제 후에도 계속 차는 중)
+      let timeToReopen = Infinity;    // 통행재개(5cm 이하)까지 (빠지는 중)
+
+      if (netRate > 0.001) {
+        // 차오르는 중
+        if (!controlTriggered) {
+          timeToControl = (controlCm - currentLevelCm) / netRate;
+        }
+        timeToFlood = (limitCm - currentLevelCm) / netRate;
+      } else if (netRate < -0.001 && currentLevelCm > controlCm) {
+        // 빠지는 중이고 아직 통제 수위 이상 → 재개통 예측
+        timeToReopen = (currentLevelCm - controlCm) / (-netRate);
+      }
+
+      // 통제 단계 판정 (통제까지 남은 시간 기준)
+      // stageWatch=15분, stageCaution=5분: 5분이내=위험, 5~15분=주의, 그이상=관심
+      // 단, 실제로 물이 차기 시작(0.5cm↑)해야 주의/위험 단계로 격상 (수위 0에서 과잉경보 방지)
+      let stage;
+      const rising = netRate > 0 && currentLevelCm >= 0.5;
+      if (currentLevelCm >= limitCm) stage = "침수";
+      else if (controlTriggered) stage = "통제";
+      else if (rising && timeToControl <= FLOOD_CONFIG.stageCaution) stage = "위험";
+      else if (rising && timeToControl <= FLOOD_CONFIG.stageWatch) stage = "주의";
+      else stage = "관심";
+
+      return {
+        inflowRate, drainRate, netRate,
+        timeToControl, timeToFlood, timeToReopen,
+        stage, controlTriggered,
+        breakeven: FLOOD_CONFIG.breakevenRain,
+      };
+    }
+
+    // ── 지하차도 축 방위각 계산 (서쪽 진입 → 동쪽 진출) ──
+    const westCarto = C.Cartographic.fromDegrees(SITE.westEntry.lon, SITE.westEntry.lat);
+    const eastCarto = C.Cartographic.fromDegrees(SITE.eastExit.lon, SITE.eastExit.lat);
+    const geodesic = new C.EllipsoidGeodesic(westCarto, eastCarto);
+    const axisHeading = geodesic.startHeading; // 라디안, 축 방향
+
+    // 중심점에서 축 방향으로 offset된 좌표 구하기 (미터 단위)
+    function offsetAlong(lon, lat, headingRad, meters) {
+      const start = C.Cartographic.fromDegrees(lon, lat);
+      const ellipsoid = C.Ellipsoid.WGS84;
+      const geo = new C.EllipsoidGeodesic(start, start, ellipsoid);
+      // 단순 근사: 위경도 미터 환산
+      const dLat = (meters * Math.cos(headingRad)) / 111320;
+      const dLon = (meters * Math.sin(headingRad)) / (111320 * Math.cos(lat * Math.PI / 180));
+      return { lon: lon + dLon, lat: lat + dLat };
+    }
+
+    // 축에 수직인 방향(폭 방향) 계산용
+    const perpHeading = axisHeading + Math.PI / 2;
+
+    const cx = SITE.center.lon, cy = SITE.center.lat;
+
+    // 좌표 헬퍼: {lon,lat} → Cartesian3
+    const toCarto = (p, h = 0) => carto(p.lon, p.lat, h);
+
+    // 방위각 회전 쿼터니언 헬퍼
+    const oriAt = (pos, headingRad, pitch = 0) =>
+      C.Transforms.headingPitchRollQuaternion(pos, new C.HeadingPitchRoll(headingRad, pitch, 0));
+
+    // ★ 실제 지형 고도를 조회한 뒤 그 위에 구조물 배치 (콘타 3D)
+    // 지형 로드 전이면 기본 고도(35m)로 폴백
+    async function buildStructures() {
+      let groundH = 35; // 성정동 대략 해발고도 폴백값
+      try {
+        // 지형 provider가 실제 지형일 때만 고도 조회 시도
+        const tp = viewer.terrainProvider;
+        if (tp && tp.availability) {
+          const samplePos = [C.Cartographic.fromDegrees(cx, cy)];
+          const sampled = await C.sampleTerrainMostDetailed(tp, samplePos);
+          if (sampled && sampled[0] && isFinite(sampled[0].height)) {
+            groundH = sampled[0].height;
+            console.log("✓ 성정지하차도 실제 지형 고도:", groundH.toFixed(1), "m");
+          }
+        } else {
+          console.log("지형 provider 없음, 폴백 고도 35m 사용");
+        }
+      } catch (e) {
+        console.warn("지형 고도 조회 실패, 기본값 사용:", e);
+      }
+
+      // BASE = 실제 지형 고도. 지하차도는 이 지표에서 아래로 파임
+      // ★ 함몰 단면을 극적으로 보이게 깊이 대폭 과장 (침수 핵심 시각화)
+      const VSCALE = 8;                    // 깊이 과장 배율 (2.5m → 20m)
+      const depth = SPEC.depth * VSCALE;
+      const topZ = groundH;                // 지하차도 상단 = 실제 지표
+      const botZ = groundH - depth;        // 지하차도 바닥 (깊이 파임)
+      const BASE = groundH;
+      const W = SPEC.width, L = SPEC.length;
+
+      // ── 1) 함몰 통로 (물이 찰 빈 공간) - 외곽선만, 속은 비움 ──
+      // 물이 여기 차오르는 게 보이도록 위쪽 열린 반투명 박스
+      const boxPos = carto(cx, cy, botZ + depth / 2);
+      viewer.entities.add({
+        name: "지하차도 함몰부",
+        position: boxPos,
+        orientation: oriAt(boxPos, axisHeading),
+        box: {
+          dimensions: new C.Cartesian3(W, L, depth),
+          fill: false,
+          outline: true,
+          outlineColor: C.Color.fromCssColorString("#3ea6ff"),
+          outlineWidth: 3,
+        },
+      });
+
+      // ── 2) 바닥 (콘크리트, 불투명) ──
+      const floorPos = carto(cx, cy, botZ + 0.4);
+      viewer.entities.add({
+        name: "지하차도 바닥",
+        position: floorPos,
+        orientation: oriAt(floorPos, axisHeading),
+        box: {
+          dimensions: new C.Cartesian3(W, L, 0.8),
+          material: C.Color.fromCssColorString("#3a4453"),
+        },
+      });
+
+      // ── 3) 옹벽 4면 (함몰 벽면, 반투명 - 안쪽 물이 보이게) ──
+      [-1, 1].forEach(side => {
+        const wo = offsetAlong(cx, cy, perpHeading, side * W / 2);
+        const wp = carto(wo.lon, wo.lat, botZ + depth / 2);
+        viewer.entities.add({
+          name: `옹벽 ${side < 0 ? "좌" : "우"}`,
+          position: wp,
+          orientation: oriAt(wp, axisHeading),
+          box: {
+            dimensions: new C.Cartesian3(0.8, L, depth),
+            material: C.Color.fromCssColorString("#59647a").withAlpha(0.12),
+            outline: true,
+            outlineColor: C.Color.fromCssColorString("#8b97ab").withAlpha(0.7),
+          },
+        });
+      });
+      // 양 끝단 벽 (짧은 면)도 반투명
+      [-1, 1].forEach(end => {
+        const eo = offsetAlong(cx, cy, axisHeading, end * L / 2);
+        const ep = carto(eo.lon, eo.lat, botZ + depth / 2);
+        viewer.entities.add({
+          name: `끝벽 ${end < 0 ? "서" : "동"}`,
+          position: ep,
+          orientation: oriAt(ep, axisHeading),
+          box: {
+            dimensions: new C.Cartesian3(W, 0.8, depth),
+            material: C.Color.fromCssColorString("#59647a").withAlpha(0.22),
+            outline: true,
+            outlineColor: C.Color.fromCssColorString("#8b97ab").withAlpha(0.5),
+          },
+        });
+      });
+
+      // ── 4) 진입/배출 램프 (함몰 바닥 → 지상으로 이어지는 대각선 길목) ──
+      // 차량이 지상에서 대각선으로 내려와 함몰부로 진입/진출하는 경사 통로
+      [-1, 1].forEach(dir => {
+        // 램프 시작: 함몰부 끝 (바닥 높이) → 램프 끝: 지상 (topZ)
+        const innerEnd = offsetAlong(cx, cy, axisHeading, dir * L / 2);          // 함몰 끝
+        const outerEnd = offsetAlong(cx, cy, axisHeading, dir * (L / 2 + SPEC.rampLen)); // 지상 도달점
+        // 램프 중점과 경사각
+        const rampMidLon = (innerEnd.lon + outerEnd.lon) / 2;
+        const rampMidLat = (innerEnd.lat + outerEnd.lat) / 2;
+        const rampMidZ = (botZ + topZ) / 2;  // 바닥~지상 중간 높이
+        const rampAngle = Math.atan2(depth, SPEC.rampLen); // 경사각
+        const rampSlopeLen = Math.sqrt(SPEC.rampLen ** 2 + depth ** 2);
+        const rampPos = carto(rampMidLon, rampMidLat, rampMidZ);
+
+        // 램프 바닥 (경사면) - 차도
+        viewer.entities.add({
+          name: `진입램프 ${dir < 0 ? "서" : "동"}`,
+          position: rampPos,
+          orientation: oriAt(rampPos, axisHeading, dir * rampAngle),
+          box: {
+            dimensions: new C.Cartesian3(W, rampSlopeLen, 0.6),
+            material: C.Color.fromCssColorString("#4b5563"),
+          },
+        });
+        // 램프 양옆 벽 (경사, 반투명) - 길목처럼 보이게
+        [-1, 1].forEach(side => {
+          const wallOff = offsetAlong(rampMidLon, rampMidLat, perpHeading, side * W / 2);
+          const wallPos = carto(wallOff.lon, wallOff.lat, rampMidZ);
+          viewer.entities.add({
+            name: `램프벽 ${dir < 0 ? "서" : "동"}${side < 0 ? "좌" : "우"}`,
+            position: wallPos,
+            orientation: oriAt(wallPos, axisHeading, dir * rampAngle),
+            box: {
+              dimensions: new C.Cartesian3(0.5, rampSlopeLen, depth * 0.7),
+              material: C.Color.fromCssColorString("#59647a").withAlpha(0.12),
+              outline: true,
+              outlineColor: C.Color.fromCssColorString("#8b97ab").withAlpha(0.5),
+            },
+          });
+        });
+        // 진입 방향 화살표 (지상 진입점에 표시)
+        viewer.entities.add({
+          name: `진입표시 ${dir < 0 ? "서" : "동"}`,
+          position: carto(outerEnd.lon, outerEnd.lat, topZ + 1),
+          label: {
+            text: dir < 0 ? "진입 ▶" : "◀ 진출",
+            font: "600 11px Pretendard, sans-serif",
+            fillColor: C.Color.fromCssColorString("#93c5fd"),
+            showBackground: true,
+            backgroundColor: C.Color.fromCssColorString("#0a0e14").withAlpha(0.8),
+            backgroundPadding: new C.Cartesian2(6, 4),
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          },
+        });
+      });
+
+      // ── 5) 주변 지표면 (BASE 레벨 판) - "여기가 지표, 그 아래로 파임" 대조 ──
+      // 함몰부 양옆으로 지표판을 깔아 깊이 대조를 명확히
+      [-1, 1].forEach(side => {
+        const go = offsetAlong(cx, cy, perpHeading, side * (W / 2 + 20));
+        const gp = carto(go.lon, go.lat, topZ);
+        viewer.entities.add({
+          name: `지표면 ${side < 0 ? "좌" : "우"}`,
+          position: gp,
+          orientation: oriAt(gp, axisHeading),
+          box: {
+            dimensions: new C.Cartesian3(40, L + SPEC.rampLen * 2, 0.5),
+            material: C.Color.fromCssColorString("#6b7688").withAlpha(0.35),
+          },
+        });
+      });
+
+      // ── 6) 경부선 철도 (함몰부 위를 가로지름) ──
+      const railHeading = axisHeading + Math.PI / 2;
+      const railZ = topZ + 2;
+      const railPos = carto(cx, cy, railZ);
+      viewer.entities.add({
+        name: "경부선 철도 부지",
+        position: railPos,
+        orientation: oriAt(railPos, railHeading),
+        box: {
+          dimensions: new C.Cartesian3(60, 20, 1.5),
+          material: C.Color.fromCssColorString("#9ca3af").withAlpha(0.45),
+          outline: true,
+          outlineColor: C.Color.fromCssColorString("#d1d5db").withAlpha(0.7),
+        },
+      });
+      for (let i = -6; i <= 6; i += 2) {
+        const rl = offsetAlong(cx, cy, axisHeading, i * 3.5);
+        const a = offsetAlong(rl.lon, rl.lat, railHeading, -28);
+        const b = offsetAlong(rl.lon, rl.lat, railHeading, 28);
+        viewer.entities.add({
+          polyline: {
+            positions: [ toCarto(a, railZ + 0.9), toCarto(b, railZ + 0.9) ],
+            width: 2,
+            material: C.Color.fromCssColorString("#e5e7eb").withAlpha(0.7),
+          },
+        });
+      }
+
+      // ── 8) 물 표면 (동적 - 강수량에 따라 차오름) ──
+      // 시각 스케일: 물 높이는 과장된 depth(20m) 기준으로 차오르되,
+      // 표시 수치는 실제 수위(cm)로 환산. window.__flood.levelRatio (0~1) 로 제어
+      if (!window.__flood) window.__flood = { levelRatio: 0, currentCm: 0 };
+
+      const waterHeightCallback = new C.CallbackProperty(() => {
+        const r = window.__flood.levelRatio;  // 0~1
+        return Math.max(0.01, depth * r);      // 물기둥 높이 (과장 스케일)
+      }, false);
+      const waterPosCallback = new C.CallbackProperty(() => {
+        const r = window.__flood.levelRatio;
+        const wh = depth * r;
+        return carto(cx, cy, botZ + wh / 2);   // 물 중심 = 바닥 + 물높이/2
+      }, false);
+
+      viewer.entities.add({
+        name: "침수 수위",
+        position: waterPosCallback,
+        orientation: oriAt(carto(cx, cy, botZ), axisHeading),
+        box: {
+          dimensions: new C.CallbackProperty(() => {
+            const wh = Math.max(0.01, depth * window.__flood.levelRatio);
+            return new C.Cartesian3(W - 0.4, L - 0.4, wh);
+          }, false),
+          material: C.Color.fromCssColorString("#2563eb").withAlpha(0.55),
+          outline: false,
+        },
+      });
+
+      // ── 9) 5cm 통제선 (실제 통제 기준 시각화) ──
+      // 새 2단 스케일: 5cm = 협곡 높이의 45% 지점
+      const controlZ = botZ + depth * 0.45;
+      const ctrlOffset = offsetAlong(cx, cy, perpHeading, W / 2 + 1);
+      viewer.entities.add({
+        name: "통제선",
+        position: carto(ctrlOffset.lon, ctrlOffset.lat, controlZ),
+        label: {
+          text: "◀ 통제기준 5cm",
+          font: "600 12px Pretendard, sans-serif",
+          fillColor: C.Color.fromCssColorString("#f43f5e"),
+          showBackground: true,
+          backgroundColor: C.Color.fromCssColorString("#0a0e14").withAlpha(0.88),
+          backgroundPadding: new C.Cartesian2(6, 4),
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          horizontalOrigin: C.HorizontalOrigin.LEFT,
+        },
+      });
+      // 통제선 라인 (빨간 판)
+      viewer.entities.add({
+        name: "통제선 라인",
+        position: carto(cx, cy, controlZ),
+        orientation: oriAt(carto(cx, cy, controlZ), axisHeading),
+        box: {
+          dimensions: new C.Cartesian3(W + 0.5, L, 0.25),
+          material: C.Color.fromCssColorString("#f43f5e").withAlpha(0.75),
+        },
+      });
+
+      // ── 9-2) cm 눈금 (1·2·3·4·5cm 표시) - 0~5cm 구간에 세밀하게 ──
+      for (let c = 1; c <= 5; c++) {
+        const tickZ = botZ + depth * (c / 5 * 0.45); // 각 cm의 시각 높이 (45% 스케일)
+        const tickOff = offsetAlong(cx, cy, perpHeading, -(W / 2 + 1));
+        viewer.entities.add({
+          name: `눈금 ${c}cm`,
+          position: carto(tickOff.lon, tickOff.lat, tickZ),
+          label: {
+            text: `${c}cm`,
+            font: "500 10px Pretendard, sans-serif",
+            fillColor: c === 5 ? C.Color.fromCssColorString("#f43f5e") : C.Color.fromCssColorString("#93c5fd"),
+            showBackground: true,
+            backgroundColor: C.Color.fromCssColorString("#0a0e14").withAlpha(0.7),
+            backgroundPadding: new C.Cartesian2(4, 2),
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+            horizontalOrigin: C.HorizontalOrigin.RIGHT,
+          },
+        });
+      }
+
+
+      // (STEP 4 신호등은 화면 좌상단 PIP 상황판 위젯으로 대체 — 아래 JS 참조)
+
+      // ═══════════════════════════════════════════════
+      //  STEP 4b · VMS 도로전광표지 (진입/진출 양쪽)
+      //  실제 VMS처럼 입구 폭(6.1m)만큼, 침수 예측 멘트 실시간 표시
+      // ═══════════════════════════════════════════════
+      window.__vms = [];
+
+      // 전광판 텍스트를 캔버스로 그려 텍스처 생성
+      function makeVmsCanvas(line1, line2, color) {
+        const cv = document.createElement("canvas");
+        cv.width = 512; cv.height = 160;
+        const g = cv.getContext("2d");
+        // 배경 (전광판 검정)
+        g.fillStyle = "#0a0d08";
+        g.fillRect(0, 0, cv.width, cv.height);
+        // 테두리
+        g.strokeStyle = "#1a2410"; g.lineWidth = 6;
+        g.strokeRect(3, 3, cv.width - 6, cv.height - 6);
+        // 텍스트 (LED 느낌)
+        g.textAlign = "center";
+        g.textBaseline = "middle";
+        g.fillStyle = color;
+        g.shadowColor = color; g.shadowBlur = 12;
+        g.font = "bold 52px 'Malgun Gothic', sans-serif";
+        g.fillText(line1, cv.width / 2, line2 ? 52 : 80);
+        if (line2) {
+          g.font = "bold 46px 'Malgun Gothic', sans-serif";
+          g.fillText(line2, cv.width / 2, 110);
+        }
+        return cv;
+      }
+
+      function makeVMS(dir) {
+        // dir: -1(서/진입) or +1(동/진출)
+        // 위치: 지하차도 입구 앞 (램프 끝 지상)
+        const signPos = offsetAlong(cx, cy, axisHeading, dir * (L / 2 + SPEC.rampLen + 8));
+        const poleH = 6.5;   // 갠트리 높이
+        const boardW = SPEC.width;  // ★ 입구 폭만큼 (6.1m)
+        const boardH = SPEC.width * 0.32;
+
+        // 양쪽 지주 (기둥 2개)
+        [-1, 1].forEach(s => {
+          const legOff = offsetAlong(signPos.lon, signPos.lat, perpHeading, s * boardW / 2);
+          const legPos = carto(legOff.lon, legOff.lat, groundH + poleH / 2);
+          viewer.entities.add({
+            name: `VMS기둥${dir}${s}`,
+            position: legPos,
+            cylinder: { length: poleH, topRadius: 0.18, bottomRadius: 0.18,
+              material: C.Color.fromCssColorString("#3a4453") },
+          });
+        });
+        // 상단 가로보 (갠트리)
+        const beamPos = carto(signPos.lon, signPos.lat, groundH + poleH);
+        viewer.entities.add({
+          name: `VMS보${dir}`,
+          position: beamPos,
+          orientation: oriAt(beamPos, perpHeading),
+          box: { dimensions: new C.Cartesian3(0.3, boardW + 0.6, 0.3),
+            material: C.Color.fromCssColorString("#3a4453") },
+        });
+        // 전광판 (billboard - 항상 카메라 향함, 확실히 보임)
+        const boardPos = carto(signPos.lon, signPos.lat, groundH + poleH - boardH / 2 - 0.4);
+        const initCanvas = makeVmsCanvas("정상 통행", "", "#34d399");
+        const vmsEnt = viewer.entities.add({
+          name: `VMS판${dir}`,
+          position: boardPos,
+          billboard: {
+            image: initCanvas,
+            width: 50,
+            height: 16,
+            verticalOrigin: C.VerticalOrigin.CENTER,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+            scaleByDistance: new C.NearFarScalar(100, 3.0, 2000, 0.8),
+          },
+        });
+        window.__vms.push({ ent: vmsEnt, dir, boardW, boardH });
+      }
+
+      makeVMS(-1);  // 서쪽(진입)
+      makeVMS(1);   // 동쪽(진출)
+
+      // VMS 멘트 갱신 함수 (침수 예측 연동, 멘트 바뀔 때만 캔버스 재생성)
+      window.__vmsLastKey = "";
+      window.__updateVMS = function(stage, timeToControl, currentCm, timeToReopen, netRate) {
+        let l1, l2, color;
+        if (stage === "통제" || stage === "침수") {
+          if (netRate < 0 && isFinite(timeToReopen)) {
+            l1 = "🚫 출입 통제"; l2 = `${Math.round(timeToReopen)}분 후 해제`; color = "#f43f5e";
+          } else {
+            l1 = "🚫 출입 통제"; l2 = "우회 바랍니다"; color = "#f43f5e";
+          }
+        } else if (stage === "위험") {
+          l1 = "침수 위험"; l2 = `${Math.round(timeToControl)}분 후 통제`; color = "#fb923c";
+        } else if (stage === "주의") {
+          l1 = "침수 주의"; l2 = `${Math.round(timeToControl)}분 후 통제 예상`; color = "#fbbf24";
+        } else {
+          l1 = "정상 통행"; l2 = ""; color = "#34d399";
+        }
+        // 멘트가 실제로 바뀌었을 때만 캔버스 재생성 (성능)
+        const key = l1 + "|" + l2 + "|" + color;
+        if (key === window.__vmsLastKey) return;
+        window.__vmsLastKey = key;
+        const canvas = makeVmsCanvas(l1, l2, color);
+        window.__vms.forEach(v => { v.ent.billboard.image = canvas; });
+        viewer.scene.requestRender();
+      };
+
+
+
+      // ═══════════════════════════════════════════════
+      //  STEP 5 · 우회 경로 (SUMO 검증 · demo_update_data.json)
+      //  국가표준노드링크→SUMO 재배정 결과 (146,150 OD쌍)
+      // ═══════════════════════════════════════════════
+      // 원래 경로 (지하차도 통과) - 통제시에만 빨강 (평상시 숨김)
+      const mainRoute = viewer.entities.add({
+        name: "원래 경로",
+        show: false,
+        polyline: {
+          positions: [
+            carto(SITE.westEntry.lon, SITE.westEntry.lat, 0),
+            carto(cx, cy, 0),
+            carto(SITE.eastExit.lon, SITE.eastExit.lat, 0),
+          ],
+          width: 5,
+          material: C.Color.fromCssColorString("#f43f5e").withAlpha(0.85),
+          clampToGround: true,
+        },
+      });
+
+      const detourEntities = { links: [], markers: [], bottlenecks: [] };
+
+      fetch("demo_update_data.json")
+        .then(r => r.json())
+        .then(dj => {
+          window.__demoData = dj;
+
+          // ── 우회 경로 25개 링크 (차로수 구분) ──
+          dj.detour_route.forEach(link => {
+            const positions = link.coordinates.map(([lon, lat]) => carto(lon, lat, 0));
+            const is1lane = link.lanes === 1;
+            // 2차로: 굵은 초록 실선 / 1차로: 가는 경고색(주황) - 시뮬 병목
+            const ent = viewer.entities.add({
+              name: `detourlink_${link.link_id}`,
+              show: false,
+              polyline: {
+                positions,
+                width: is1lane ? 4 : 8,
+                material: new C.PolylineGlowMaterialProperty({
+                  color: is1lane
+                    ? C.Color.fromCssColorString("#fb923c").withAlpha(0.9)  // 1차로 경고색
+                    : C.Color.fromCssColorString("#34d399").withAlpha(0.85), // 2차로
+                  glowPower: is1lane ? 0.4 : 0.25,
+                }),
+                clampToGround: true,
+              },
+            });
+            detourEntities.links.push(ent);
+          });
+
+          // ── 1차로 병목 구간 라벨 (대표 1개) ──
+          const oneLane = dj.detour_route.filter(l => l.lanes === 1);
+          if (oneLane.length) {
+            const mid = oneLane[Math.floor(oneLane.length / 2)];
+            const c = mid.coordinates[0];
+            const lbl = viewer.entities.add({
+              name: "detour_1lane_lbl",
+              show: false,
+              position: carto(c[0], c[1], 0),
+              label: {
+                text: `⚠ 1차로 병목 구간 (${oneLane.length}개 링크)`,
+                font: "600 11px Pretendard, sans-serif",
+                fillColor: C.Color.fromCssColorString("#fdba74"),
+                showBackground: true,
+                backgroundColor: C.Color.fromCssColorString("#1a0f05").withAlpha(0.9),
+                backgroundPadding: new C.Cartesian2(6, 4),
+                heightReference: C.HeightReference.CLAMP_TO_GROUND,
+                disableDepthTestDistance: 8000,
+                scaleByDistance: new C.NearFarScalar(500, 1.0, 5000, 0.4),
+              },
+            });
+            detourEntities.links.push(lbl);
+          }
+
+          // ── 스마트 신호 제어 대상 (방죽안오거리, 하나만) ──
+          dj.smart_signal_control.forEach(s => {
+            const m = viewer.entities.add({
+              name: `smartsignal_${s.name}`,
+              show: false,
+              position: carto(s.lon, s.lat, 0),
+              point: {
+                pixelSize: 16,
+                color: C.Color.fromCssColorString("#fbbf24"),
+                outlineColor: C.Color.WHITE, outlineWidth: 2.5,
+                heightReference: C.HeightReference.CLAMP_TO_GROUND,
+                disableDepthTestDistance: 10000,
+              },
+              label: {
+                text: `🚦 ${s.name}\n기존 신호 → 실시간 감응 제어`,
+                font: "700 12px Pretendard, sans-serif",
+                fillColor: C.Color.fromCssColorString("#fde68a"),
+                showBackground: true,
+                backgroundColor: C.Color.fromCssColorString("#0a0e14").withAlpha(0.9),
+                backgroundPadding: new C.Cartesian2(8, 5),
+                pixelOffset: new C.Cartesian2(0, -26),
+                heightReference: C.HeightReference.CLAMP_TO_GROUND,
+                disableDepthTestDistance: 10000,
+                scaleByDistance: new C.NearFarScalar(500, 1.0, 6000, 0.45),
+              },
+            });
+            detourEntities.markers.push(m);
+          });
+
+          // ── 병목 9개소 (검지기 필요 지점 · 속도비로 농도) ──
+          dj.bottleneck_new_signal.forEach(bn => {
+            const p1 = bn.priority.startsWith("1");
+            // 속도비 낮을수록 진한 빨강 (0.01=심각 → 0.59=중간)
+            const sr = bn.speed_ratio;
+            const sev = 1 - Math.min(1, sr / 0.6);  // 0~1 (1=심각)
+            const color = p1 ? "#f43f5e" : "#fb923c";
+            const m = viewer.entities.add({
+              name: `bottleneck_${bn.name}_${bn.lat}`,
+              show: false,
+              position: carto(bn.lon, bn.lat, 0),
+              point: {
+                pixelSize: p1 ? 12 : 9,
+                color: C.Color.fromCssColorString(color).withAlpha(0.55 + sev * 0.4),
+                outlineColor: C.Color.WHITE, outlineWidth: 1.5,
+                heightReference: C.HeightReference.CLAMP_TO_GROUND,
+                disableDepthTestDistance: 9000,
+              },
+              label: {
+                text: p1 ? `${bn.name} (속도비 ${sr})` : "",
+                font: "500 10px Pretendard, sans-serif",
+                fillColor: C.Color.fromCssColorString("#fca5a5"),
+                showBackground: true,
+                backgroundColor: C.Color.fromCssColorString("#1a0505").withAlpha(0.85),
+                backgroundPadding: new C.Cartesian2(5, 3),
+                pixelOffset: new C.Cartesian2(0, -16),
+                heightReference: C.HeightReference.CLAMP_TO_GROUND,
+                disableDepthTestDistance: 9000,
+                scaleByDistance: new C.NearFarScalar(500, 1.0, 4000, 0.35),
+              },
+            });
+            detourEntities.bottlenecks.push(m);
+          });
+
+          console.log("✓ SUMO 우회 데이터 로드:",
+            dj.detour_route.length, "링크,",
+            dj.smart_signal_control.length, "감응교차로,",
+            dj.bottleneck_new_signal.length, "검지기지점");
+        })
+        .catch(e => console.warn("우회 데이터 로드 실패:", e));
+
+      // 우회 경로 토글 함수 (선제 신호 전환 or 통제 시)
+      window.__updateDetour = function(showDetour, controlled) {
+        [...detourEntities.links, ...detourEntities.markers, ...detourEntities.bottlenecks]
+          .forEach(e => { e.show = showDetour; });
+        mainRoute.show = controlled;
+        viewer.scene.requestRender();
+      };
+
+
+      // 카메라 프리셋이 쓸 고도값을 전역으로 노출
+      window.__terrain = { groundH, topZ, botZ, depth, BASE };
+      // 구조물 완성 후 측면 시점으로 진입
+      if (window.__enterAfterBuild) window.__enterAfterBuild();
+    } // buildStructures 끝
+
+    // ── 카메라 프리셋 (실제 지형 고도 기반) ──
+    // buildStructures가 끝나면 window.__terrain에 고도가 채워짐. 폴백 35m.
+    function getCam() {
+      const T = window.__terrain || { groundH: 35, BASE: 35 };
+      const H = T.groundH;
+      return {
+        // 부감: 지하차도+철도 전체가 보이는 높이
+        bird: {
+          destination: carto(SITE.center.lon, SITE.center.lat, H + 200),
+          orientation: { heading: C.Math.toRadians(20), pitch: C.Math.toRadians(-50), roll: 0 },
+        },
+        // 측면(단면): 함몰 협곡을 정측면에서 봄 - 깊이가 확실히 보임
+        side: {
+          destination: carto(cx - 0.0009, cy - 0.0005, H + 5),
+          orientation: { heading: C.Math.toRadians(C.Math.toDegrees(axisHeading) + 90), pitch: C.Math.toRadians(-8), roll: 0 },
+        },
+        // 진입부: 서쪽 램프 위에서 함몰 안쪽을 비스듬히 내려다봄
+        entry: {
+          destination: carto(SITE.westEntry.lon - 0.0004, SITE.westEntry.lat + 0.00015, H + 18),
+          orientation: { heading: C.Math.toRadians(C.Math.toDegrees(axisHeading)), pitch: C.Math.toRadians(-22), roll: 0 },
+        },
+        // 우회 전용: 지하차도 + 북쪽 우회 corridor(대흥로·중앙로) 전체가 한눈에
+        detour: {
+          destination: carto(SITE.center.lon + 0.002, SITE.center.lat - 0.002, H + 1300),
+          orientation: { heading: C.Math.toRadians(-15), pitch: C.Math.toRadians(-52), roll: 0 },
+        },
+      };
+    }
+
+    function flyTo(key, dur = 1.8) {
+      const c = getCam()[key];
+      viewer.camera.flyTo({
+        destination: c.destination,
+        orientation: c.orientation,
+        duration: dur,
+      });
+    }
+
+    // 버튼 바인딩
+    document.querySelectorAll(".cam-btn").forEach(btn => {
+      btn.addEventListener("click", () => flyTo(btn.dataset.cam));
+    });
+    // 키보드 1/2/3
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "1") flyTo("bird");
+      if (e.key === "2") flyTo("side");
+      if (e.key === "3") flyTo("entry");
+      if (e.key === "4") flyTo("detour");
+    });
+
+    // ── 초기 진입: 부감 → 살짝 회전하며 안착 ──
+    viewer.camera.setView({
+      destination: carto(SITE.center.lon, SITE.center.lat, 2600),
+      orientation: { heading: 0, pitch: C.Math.toRadians(-90), roll: 0 },
+    });
+
+    // 이미지 로드 후 로딩 화면 제거 + 시네마틱 진입
+    const loading = document.getElementById("loading");
+    let started = false;
+
+    function enterScene(delay = 800) {
+      if (started) return;
+      started = true;
+      setTimeout(() => {
+        loading.classList.add("hidden");
+        flyTo("side", 3.4); // 구조물이 보이는 측면 시점으로 진입
+      }, delay);
+    }
+
+    // 구조물이 실제 지형 위에 완성되면 진입 (가장 정확한 타이밍)
+    window.__enterAfterBuild = () => enterScene(600);
+
+    // 안전장치: 지형/구조물 로드가 오래 걸려도 8초 후 무조건 진입
+    setTimeout(() => enterScene(0), 8000);
+
+    // ═══════════════════════════════════════════════
+    //  STEP 3 · 침수 시뮬레이션 로직 (배수 모델 포함)
+    // ═══════════════════════════════════════════════
+    const els = {
+      stage: document.getElementById("fpStage"),
+      hero: document.getElementById("fpHero"),
+      heroStatus: document.getElementById("heroStatus"),
+      heroSub: document.getElementById("heroSub"),
+      rainSlider: document.getElementById("rainSlider"),
+      rainValue: document.getElementById("rainValue"),
+      presets: document.getElementById("presets"),
+      barInflow: document.getElementById("barInflow"),
+      barDrain: document.getElementById("barDrain"),
+      valInflow: document.getElementById("valInflow"),
+      valDrain: document.getElementById("valDrain"),
+      breakeven: document.getElementById("breakeven"),
+      mLevel: document.getElementById("mLevel"),
+      mNet: document.getElementById("mNet"),
+      mTime: document.getElementById("mTime"),
+      mTimeK: document.getElementById("mTimeK"),
+      speedBtns: document.getElementById("speedBtns"),
+      elapsed: document.getElementById("elapsed"),
+      btnPlay: document.getElementById("btnPlay"),
+      btnReset: document.getElementById("btnReset"),
+    };
+
+    const sim = {
+      rainfall: 30, currentCm: 0, playing: false,
+      lastTime: null, speed: 1, elapsedMin: 0,
+    };
+
+    // 배수 한계 강수량 표시 (고정값)
+    els.breakeven.textContent = FLOOD_CONFIG.breakevenRain.toFixed(0);
+
+    // 시간 포맷 (분 → "N분" or "N시간 M분")
+    function fmtTime(min) {
+      const m = Math.round(min);
+      if (m < 60) return m + "<small>분</small>";
+      const h = Math.floor(m / 60), mm = m % 60;
+      return h + "<small>시간</small> " + mm + "<small>분</small>";
+    }
+
+    function updateUI() {
+      const r = predictFlood(sim.rainfall, sim.currentCm);
+
+      // ★ 물 시각화 2단 스케일:
+      //   0~5cm(통제기준) 구간을 협곡의 아래쪽 45%에 배분 → 1·2·3·4·5cm 구분되되 과하지 않게
+      //   5~250cm(완전침수) 구간을 위쪽 55%에 배분
+      const cm = sim.currentCm;
+      let visRatio;
+      if (cm <= FLOOD_CONFIG.controlCm) {
+        visRatio = (cm / FLOOD_CONFIG.controlCm) * 0.45;
+      } else {
+        const upper = (cm - FLOOD_CONFIG.controlCm) / (FLOOD_CONFIG.limitCm - FLOOD_CONFIG.controlCm);
+        visRatio = 0.45 + upper * 0.55;
+      }
+      window.__flood.levelRatio = Math.min(1, visRatio);
+      window.__flood.currentCm = cm;
+
+      // 강수량 + 호우 특보 상태
+      let rainStatus = "";
+      if (sim.rainfall >= 50) rainStatus = " · 호우경보";
+      else if (sim.rainfall >= 30) rainStatus = " · 호우주의보";
+      else if (sim.rainfall >= FLOOD_CONFIG.breakevenRain) rainStatus = " · 배수한계 초과";
+      els.rainValue.innerHTML = sim.rainfall + " mm/h" +
+        (rainStatus ? `<span style="color:#fbbf24">${rainStatus}</span>` : "");
+
+      // 유입 vs 배수 인포그래픽 (최대 스케일 20cm/min 기준)
+      const maxBar = 20;
+      els.barInflow.style.width = Math.min(100, r.inflowRate / maxBar * 100) + "%";
+      els.barDrain.style.width = Math.min(100, FLOOD_CONFIG.drainRate / maxBar * 100) + "%";
+      els.valInflow.textContent = r.inflowRate.toFixed(1);
+      els.valDrain.textContent = FLOOD_CONFIG.drainRate.toFixed(1);
+
+      // 수위 / 순변화 (소수1자리로 5cm 경계 명확히)
+      els.mLevel.innerHTML = sim.currentCm.toFixed(1) + "<small>cm</small>";
+      els.mLevel.classList.toggle("alert", r.controlTriggered);
+      const netSign = r.netRate >= 0 ? "+" : "";
+      els.mNet.innerHTML = netSign + r.netRate.toFixed(1) + "<small>cm/분</small>";
+
+      // 남은 시간: stage 기준으로 판정 (배지·히어로와 항상 일치)
+      if (r.stage === "침수") {
+        els.mTimeK.textContent = "상태";
+        els.mTime.innerHTML = "<span style='color:#f43f5e'>완전침수</span>";
+      } else if (r.stage === "통제") {
+        // 5cm 초과 = 통행 불가 상태
+        if (r.netRate < 0 && isFinite(r.timeToReopen)) {
+          els.mTimeK.textContent = "통행가능까지";
+          els.mTime.innerHTML = fmtTime(r.timeToReopen);
+        } else {
+          els.mTimeK.textContent = "현재 상태";
+          els.mTime.innerHTML = "<span style='color:#f43f5e'>통행 불가</span>";
+        }
+      } else {
+        // 관심/주의/위험 = 아직 통제 전 → 통제(5cm)까지
+        els.mTimeK.textContent = "통제까지";
+        if (r.netRate > 0 && isFinite(r.timeToControl)) {
+          els.mTime.innerHTML = fmtTime(r.timeToControl);
+        } else {
+          els.mTime.innerHTML = "—";  // 물 안 차는 중
+        }
+      }
+
+      // 통제 단계 배지
+      const stageMap = {
+        "관심": ["watch", "관심"], "주의": ["caution", "주의"],
+        "위험": ["danger", "위험"], "통제": ["danger", "통제"], "침수": ["flooded", "침수"],
+      };
+      const [cls, label] = stageMap[r.stage];
+      els.stage.className = "fp-stage " + cls;
+      els.stage.textContent = label;
+
+      // 히어로 카드: 통제/침수 상태면 통행불가 (stage 기준으로 배지와 일치)
+      if (r.stage === "통제" || r.stage === "침수") {
+        els.hero.classList.add("blocked");
+        els.heroStatus.textContent = "🚫 통행 불가";
+        if (r.netRate < 0 && isFinite(r.timeToReopen)) {
+          els.heroSub.innerHTML = `수위 ${sim.currentCm.toFixed(1)}cm · 약 ${Math.round(r.timeToReopen)}분 후 통행 가능`;
+        } else if (r.netRate > 0) {
+          els.heroSub.innerHTML = `수위 ${sim.currentCm.toFixed(1)}cm · 계속 상승 중 (비 그쳐야 배수)`;
+        } else {
+          els.heroSub.innerHTML = `수위 ${sim.currentCm.toFixed(1)}cm · 통제기준(5cm) 초과`;
+        }
+      } else {
+        els.hero.classList.remove("blocked");
+        els.heroStatus.textContent = "통행 가능";
+        const t = (r.netRate > 0 && isFinite(r.timeToControl))
+          ? ` · ${Math.round(r.timeToControl)}분 후 통제 예상` : "";
+        els.heroSub.textContent = "수위 통제기준(5cm) 이하" + t;
+      }
+
+      // 경과시간
+      els.elapsed.textContent = `경과 ${Math.round(sim.elapsedMin)}분`;
+
+      // ★ STEP 4: 신호 제어 - 침수 '예정 시간'에 연동해 선제 반응 (교통공학 핵심)
+      window.__signalStage = r.stage;
+      window.__signalInfo = {
+        stage: r.stage,
+        timeToControl: r.timeToControl,   // 통제까지 남은 분 (이게 작아질수록 미리 우회 강화)
+        controlled: (r.stage === "통제" || r.stage === "침수"),
+        rising: r.netRate > 0,
+      };
+      // ★ STEP 4b: VMS 도로전광표지 멘트 갱신
+      if (window.__updateVMS) {
+        window.__updateVMS(r.stage, r.timeToControl, sim.currentCm, r.timeToReopen, r.netRate);
+      }
+      // ★ STEP 5: 우회로 표시 + 선제 신호 전환 (SUMO 검증: 선제성의 대상은 '신호')
+      //   통제 15분 전부터 우회로 신호를 감응 모드로 전환 (차량 우회 강제가 아님)
+      const preSignal = r.netRate > 0 && isFinite(r.timeToControl) && r.timeToControl <= 15;
+      const controlled = (r.stage === "통제" || r.stage === "침수");
+      if (window.__updateDetour) window.__updateDetour(controlled || preSignal, controlled);
+      updateDetourPanel(controlled, preSignal, r.timeToControl);
+
+      viewer.scene.requestRender();
+    }
+
+    // 우회 패널 갱신
+    function updateDetourPanel(controlled, preSignal, timeToControl) {
+      const st = document.getElementById("dpStatus");
+      const cmp = document.getElementById("dpCompare");
+      const detourBtn = document.querySelector('.cam-btn[data-cam="detour"]');
+      if (!st) return;
+      if (controlled) {
+        st.textContent = "⚠ 지하차도 통제 · 우회로 감응 제어";
+        st.classList.add("active");
+        cmp.style.display = "flex";
+        if (detourBtn) detourBtn.classList.add("highlight");
+      } else if (preSignal) {
+        // 선제 신호 전환 (통제 전 우회로 신호를 감응 모드로) — SUMO 검증 반영
+        const m = isFinite(timeToControl) ? Math.round(timeToControl) : "—";
+        st.innerHTML = `🔶 선제 신호 전환 · 통제 ${m}분 전`;
+        st.classList.add("active");
+        cmp.style.display = "flex";
+        if (detourBtn) detourBtn.classList.add("highlight");
+      } else {
+        st.textContent = "지하차도 정상 통행";
+        st.classList.remove("active");
+        cmp.style.display = "none";
+        if (detourBtn) detourBtn.classList.remove("highlight");
+      }
+    }
+
+    // ═══════════════════════════════════════════════
+    //  평상시: 정상 주기 / 침수위험: 주기 단축 + 우회 우선
+    // ═══════════════════════════════════════════════
+    //  STEP 4 · 신호 주기 엔진 (실제 신호가 돌아감)
+    //  평상시: 정상 주기 / 침수위험: 주기 단축 + 우회 우선
+    // ═══════════════════════════════════════════════
+    window.__signalStage = "관심";
+    window.__signalInfo = { stage: "관심", timeToControl: Infinity, controlled: false, rising: false };
+
+    // ★ 침수 예정 → 신호 제어 계획 (SUMO 검증 반영 + 현실적인 분단위 증감)
+    //   - 통제 15분 전부터 우회로 초록시간을 분당 1초씩 '완만하게' 증가 (30초→45초)
+    //     · 15분에 걸쳐 서서히 조정, 변화 폭도 30초의 1.5배(최대 45초)로 제한
+    //       → 실제 감응신호 운영에서 사이클당 조정 폭(대략 ±10~20%)에 맞춤
+    //     · 30→60초까지 가는 방식은 변화 폭이 너무 커서 비현실적이라 폐기
+    //   - 통제 확정 순간에만: 지하차도 0초(차단) / 우회로 60초(상시 녹색)
+    //     → 급격한 전환은 실제 통제가 발효되는 그 순간에만 발생
+    const PRESIGNAL_MIN = 15;     // 이 시점부터 초록시간 조정 시작
+    const RAMP_RATE = 1;          // 분당 우회로 초록 증가량(초) — 완만한 조정
+    const DGREEN_CAP = 45;        // 통제 전 최대 우회로 초록(초) — 30초 대비 최대 +15초까지만
+
+    function computeSignalPlan(info) {
+      const total = 60;
+      // 통제 확정: 지하차도 완전 차단 (급격한 전환은 이 순간에만 발생)
+      if (info.controlled) {
+        return {
+          uGreen: 0, dGreen: total,
+          label: "지하차도 차단 · 우회로 60초 상시 녹색", mode: "차단", lead: true,
+        };
+      }
+      const t = info.timeToControl;
+      const rising = info.rising && isFinite(t);
+
+      if (rising && t <= PRESIGNAL_MIN) {
+        // 통제 15분 전부터: 우회로 초록시간 분당 1초씩 완만하게 증가 (최대 45초)
+        const dGreen = Math.min(DGREEN_CAP, Math.max(30, Math.round(30 + RAMP_RATE * (PRESIGNAL_MIN - t))));
+        const uGreen = total - dGreen;
+        return {
+          uGreen, dGreen,
+          label: `우회로 감응 조정 · 초록 ${dGreen}초 (통제 ${Math.round(t)}분 전)`,
+          mode: "조정", lead: true,
+        };
+      }
+      // 평상
+      return {
+        uGreen: 30, dGreen: 30,
+        label: "평상 운영 (고정주기)", mode: "평상", lead: false,
+      };
+    }
+
+    const signalEngine = { timer: 0 };
+
+    function setLamp(tlId, color) {
+      const tl = document.getElementById(tlId);
+      if (!tl) return;
+      tl.querySelectorAll(".tl-lamp").forEach(l => l.classList.remove("on"));
+      const lamp = tl.querySelector(".tl-lamp." + color);
+      if (lamp) lamp.classList.add("on");
+    }
+
+    let signalLast = performance.now();
+    function signalLoop(now) {
+      const dt = (now - signalLast) / 1000;
+      signalLast = now;
+      const info = window.__signalInfo || { stage: "관심", timeToControl: Infinity, controlled: false, rising: false };
+      const plan = computeSignalPlan(info);
+
+      // 모드 표시
+      const pipMode = document.getElementById("pipMode");
+      if (pipMode) {
+        pipMode.textContent = plan.label;
+        pipMode.classList.toggle("emergency", plan.lead);
+      }
+      const pipCycle = document.getElementById("pipCycle");
+      if (pipCycle) {
+        if (plan.mode === "평상") {
+          pipCycle.textContent = "우회로 고정주기 운영 중 (30초/30초)";
+          pipCycle.classList.remove("fast");
+        } else if (plan.mode === "차단") {
+          pipCycle.textContent = "지하차도 차단 · 우회로 60초 상시 녹색 (총지체 -93%)";
+          pipCycle.classList.add("fast");
+        } else {
+          // 조정: 우회로 초록시간 분당 1초씩 완만하게 증가 중 (최대 45초)
+          pipCycle.textContent = `우회로 초록 15분간 분당 +${RAMP_RATE}초 완만 증가 (30초→45초)`;
+          pipCycle.classList.add("fast");
+        }
+      }
+
+      signalEngine.timer += dt;
+
+      // 완전 차단 (통제)
+      if (plan.uGreen === 0) {
+        setLamp("tlUnderpass", "red");
+        setLamp("tlDetour", "green");
+        document.getElementById("phaseUnderpass").textContent = "적색 (차단)";
+        document.getElementById("phaseDetour").textContent = "녹색 (상시)";
+        requestAnimationFrame(signalLoop);
+        return;
+      }
+
+      // 정상 주기: 지하차도녹 → 황(3s) → 우회녹 → 황(3s) → 반복
+      const uG = plan.uGreen, dG = plan.dGreen, yellow = 3;
+      const total = uG + yellow + dG + yellow;
+      const t = signalEngine.timer % total;
+
+      let uColor, dColor, uPhase, dPhase, remain;
+      if (t < uG) {
+        uColor = "green"; dColor = "red"; remain = Math.ceil(uG - t);
+        uPhase = `녹색 ${remain}초`; dPhase = "적색 대기";
+      } else if (t < uG + yellow) {
+        uColor = "yellow"; dColor = "red"; remain = Math.ceil(uG + yellow - t);
+        uPhase = `황색 ${remain}초`; dPhase = "적색 대기";
+      } else if (t < uG + yellow + dG) {
+        uColor = "red"; dColor = "green"; remain = Math.ceil(uG + yellow + dG - t);
+        uPhase = "적색 대기"; dPhase = `녹색 ${remain}초`;
+      } else {
+        uColor = "red"; dColor = "yellow"; remain = Math.ceil(total - t);
+        uPhase = "적색 대기"; dPhase = `황색 ${remain}초`;
+      }
+      setLamp("tlUnderpass", uColor);
+      setLamp("tlDetour", dColor);
+      document.getElementById("phaseUnderpass").textContent = uPhase;
+      document.getElementById("phaseDetour").textContent = dPhase;
+
+      requestAnimationFrame(signalLoop);
+    }
+    requestAnimationFrame(signalLoop);
+
+    // 시뮬레이션 루프 (1초 = 가상 1분 × 배속)
+    function tick(now) {
+      if (!sim.playing) return;
+      if (sim.lastTime == null) sim.lastTime = now;
+      let dtSec = (now - sim.lastTime) / 1000;
+      sim.lastTime = now;
+      // 프레임 끊김/탭전환 시 dtSec가 커져 물이 한번에 확 차는 것 방지 (상한 0.1초)
+      dtSec = Math.min(dtSec, 0.1);
+      const dtMin = dtSec * sim.speed;  // 배속 반영
+
+      const r = predictFlood(sim.rainfall, sim.currentCm);
+      // 순변화 반영 (유입-배수). 0 밑으로 안 내려가게, limit 위로 안 올라가게
+      sim.currentCm = Math.max(0, Math.min(FLOOD_CONFIG.limitCm, sim.currentCm + r.netRate * dtMin));
+      sim.elapsedMin += dtMin;
+      updateUI();
+
+      requestAnimationFrame(tick);  // 침수돼도 계속 (배수로 다시 빠질 수 있으니)
+    }
+
+    function startSim() {
+      if (sim.playing) return;
+      sim.playing = true; sim.lastTime = null;
+      els.btnPlay.textContent = "❚❚ 일시정지";
+      els.btnPlay.classList.add("playing");
+      requestAnimationFrame(tick);
+    }
+    function stopSim() {
+      sim.playing = false;
+      els.btnPlay.textContent = "▶ 계속";
+      els.btnPlay.classList.remove("playing");
+    }
+    function resetSim() {
+      stopSim();
+      sim.currentCm = 0; sim.elapsedMin = 0;
+      els.btnPlay.textContent = "▶ 시작";
+      updateUI();
+    }
+
+    // 슬라이더
+    els.rainSlider.addEventListener("input", (e) => {
+      sim.rainfall = parseInt(e.target.value, 10);
+      // 프리셋 활성 해제
+      els.presets.querySelectorAll(".preset-chip").forEach(c => c.classList.remove("active"));
+      updateUI();
+    });
+    // 프리셋 칩
+    els.presets.querySelectorAll(".preset-chip").forEach(chip => {
+      chip.addEventListener("click", () => {
+        sim.rainfall = parseInt(chip.dataset.rain, 10);
+        els.rainSlider.value = sim.rainfall;
+        els.presets.querySelectorAll(".preset-chip").forEach(c => c.classList.remove("active"));
+        chip.classList.add("active");
+        updateUI();
+      });
+    });
+    // 배속
+    els.speedBtns.querySelectorAll(".spd").forEach(btn => {
+      btn.addEventListener("click", () => {
+        sim.speed = parseFloat(btn.dataset.spd);
+        els.speedBtns.querySelectorAll(".spd").forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+      });
+    });
+    // 재생/리셋
+    els.btnPlay.addEventListener("click", () => { if (sim.playing) stopSim(); else startSim(); });
+    els.btnReset.addEventListener("click", resetSim);
+
+    // 초기 UI
+    updateUI();
+
+    // SUMO 검증 오버레이 토글
+    const sumoOverlay = document.getElementById("sumoOverlay");
+    document.getElementById("sumoBtn").addEventListener("click", () => sumoOverlay.classList.add("show"));
+    document.getElementById("sumoClose").addEventListener("click", () => sumoOverlay.classList.remove("show"));
+    sumoOverlay.addEventListener("click", (e) => { if (e.target === sumoOverlay) sumoOverlay.classList.remove("show"); });
+
+
+
+    }; // __cesiumReady 끝
+
+    // Cesium 로드 시작
+    window.__startCesiumLoad();
+  </script>
+</body>
+</html>

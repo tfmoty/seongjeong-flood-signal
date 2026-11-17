@@ -1,0 +1,17 @@
+# 비밀값 (절대 올리지 않기)
+app/config.js
+*.env
+
+# 로컬 Cesium 사본 (선택, 용량 큼 → CDN 폴백 사용)
+app/cesium/
+
+# OS / 에디터
+.DS_Store
+Thumbs.db
+~$*.docx
+
+# 제3자 로드뷰 캡처 (저작권) — 로컬에서만 사용
+app/underpass_photo.png
+
+# 내부 전달용 안내
+app/여는방법_먼저읽기.txt

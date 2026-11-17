@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>성정지하차도 실사 침수 시뮬레이션</title>
+<style>
+  :root {
+    --ink: #e8eef6; --ink-dim: #8ba0b8;
+    --panel: rgba(10,14,20,0.92); --border: rgba(90,120,160,0.3);
+    --safe: #34d399; --warn: #fbbf24; --danger: #f43f5e; --accent: #3ea6ff;
+    --mono: "SF Mono","JetBrains Mono",ui-monospace,monospace;
+    --sans: "Pretendard",-apple-system,"Segoe UI","Malgun Gothic",sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width:100%; height:100%; overflow:hidden; background:#0a0e14; font-family:var(--sans); color:var(--ink); }
+
+  .stage {
+    position: relative; width: 100vw; height: 100vh;
+    display: flex; align-items: center; justify-content: center;
+    background: #000;
+  }
+  /* 실사 사진 + 물이 차오르는 컨테이너 */
+  .scene {
+    position: relative;
+    max-width: 100%; max-height: 100%;
+    aspect-ratio: 786 / 520;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+    overflow: hidden;
+  }
+  .scene img.bg { display:block; width:100%; height:100%; object-fit:cover; }
+
+  /* 물 레이어 - 지하차도 입구(하단 중앙)부터 차오름 */
+  .water {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    height: 0%;
+    background: linear-gradient(180deg,
+      rgba(37,99,235,0.35) 0%,
+      rgba(30,64,120,0.62) 40%,
+      rgba(20,45,90,0.78) 100%);
+    border-top: 2px solid rgba(120,180,255,0.7);
+    transition: height 0.15s linear;
+    pointer-events: none;
+    /* 물 표면 일렁임 */
+    box-shadow: inset 0 3px 12px rgba(150,200,255,0.4);
+  }
+  .water::before {
+    content: ""; position: absolute; top:-1px; left:0; right:0; height:6px;
+    background: linear-gradient(90deg, transparent, rgba(180,220,255,0.6), transparent);
+    animation: shimmer 3s ease-in-out infinite;
+  }
+  @keyframes shimmer { 0%,100%{opacity:0.4;} 50%{opacity:0.9;} }
+
+  /* 반사光 물결 */
+  .ripple {
+    position:absolute; left:0; right:0; height:100%;
+    background: repeating-linear-gradient(90deg,
+      transparent, transparent 40px,
+      rgba(150,200,255,0.08) 40px, rgba(150,200,255,0.08) 80px);
+    animation: drift 6s linear infinite;
+  }
+  @keyframes drift { from{transform:translateX(0);} to{transform:translateX(80px);} }
+
+  /* 수위 라벨 (물 표면에 붙음) */
+  .level-tag {
+    position:absolute; right: 12px;
+    transform: translateY(50%);
+    background: var(--panel); border:1px solid var(--border);
+    padding: 4px 10px; border-radius: 6px;
+    font-family: var(--mono); font-size: 13px; font-weight:700;
+    color: var(--accent);
+    transition: bottom 0.15s linear;
+    z-index: 5;
+  }
+  .level-tag.warn { color: var(--danger); border-color: var(--danger); }
+
+  /* 통제선 5cm 표시 */
+  .control-line {
+    position:absolute; left:0; right:0;
+    border-top: 2px dashed rgba(244,63,94,0.8);
+    z-index: 4; pointer-events:none;
+  }
+  .control-line .cl-label {
+    position:absolute; left: 12px; top:-11px;
+    background: var(--danger); color:#fff;
+    font-size: 11px; font-weight:700; padding:2px 8px; border-radius:4px;
+    font-family: var(--mono);
+  }
+
+  /* 상단 상태 배너 */
+  .status-banner {
+    position:absolute; top: 0; left:0; right:0;
+    padding: 14px 20px;
+    background: linear-gradient(180deg, rgba(6,10,16,0.9), transparent);
+    display:flex; align-items:center; gap:14px;
+    z-index: 10;
+  }
+  .status-banner .title { font-size:16px; font-weight:700; }
+  .status-banner .sub { font-size:12px; color:var(--ink-dim); font-family:var(--mono); }
+  .status-badge {
+    margin-left:auto; font-size:13px; font-weight:700; font-family:var(--mono);
+    padding: 5px 14px; border-radius: 20px;
+    color: var(--safe); border:1px solid var(--safe); background:rgba(52,211,153,0.12);
+    transition: all 0.3s;
+  }
+  .status-badge.blocked { color:#fff; background:var(--danger); border-color:var(--danger); animation:pulse 1s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.5;} }
+
+  /* 통행불가 오버레이 */
+  .blocked-overlay {
+    position:absolute; inset:0; z-index:8;
+    display:flex; align-items:center; justify-content:center;
+    background: rgba(244,63,94,0.12);
+    opacity:0; transition: opacity 0.4s; pointer-events:none;
+  }
+  .blocked-overlay.show { opacity:1; }
+  .blocked-overlay .bo-text {
+    font-size: 42px; font-weight:800; color:#fff;
+    text-shadow: 0 2px 20px rgba(0,0,0,0.8);
+    border: 4px solid #fff; padding: 16px 40px; border-radius:12px;
+    background: rgba(244,63,94,0.85);
+    transform: scale(0.9); transition: transform 0.4s;
+  }
+  .blocked-overlay.show .bo-text { transform: scale(1); }
+
+  /* 컨트롤 패널 */
+  .controls {
+    position:absolute; bottom: 18px; left: 50%; transform:translateX(-50%);
+    width: min(560px, 92%);
+    background: var(--panel); border:1px solid var(--border);
+    border-radius: 14px; padding: 16px 20px; z-index: 10;
+    backdrop-filter: blur(12px);
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  }
+  .ctrl-top { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+  .ctrl-metrics { display:flex; gap:20px; }
+  .cm { text-align:center; }
+  .cm .k { font-size:10px; color:var(--ink-dim); font-family:var(--mono); margin-bottom:2px; }
+  .cm .v { font-size:18px; font-weight:700; }
+  .cm .v.alert { color: var(--danger); }
+  .cm .v small { font-size:11px; color:var(--ink-dim); font-weight:400; }
+
+  .rain-row { display:flex; align-items:center; gap:12px; margin-bottom:12px; }
+  .rain-row label { font-size:12px; color:var(--ink-dim); font-family:var(--mono); white-space:nowrap; }
+  #rain { flex:1; height:5px; border-radius:3px; -webkit-appearance:none; appearance:none;
+    background: linear-gradient(90deg,#3ea6ff,#fbbf24 55%,#f43f5e); cursor:pointer; }
+  #rain::-webkit-slider-thumb { -webkit-appearance:none; width:16px; height:16px; border-radius:50%;
+    background:#fff; border:2px solid var(--accent); cursor:pointer; }
+  #rainVal { font-family:var(--mono); font-size:13px; font-weight:700; color:var(--accent); min-width:110px; text-align:right; }
+
+  .btns { display:flex; gap:8px; }
+  .btn { flex:1; font-family:var(--sans); font-size:13px; font-weight:600;
+    color:var(--ink); background:rgba(90,120,160,0.12); border:1px solid var(--border);
+    border-radius:8px; padding:10px; cursor:pointer; transition:all 0.15s; }
+  .btn:hover { border-color:var(--accent); }
+  .btn.play { background:var(--accent); color:#06111f; border-color:var(--accent); }
+  .btn.play.playing { background:var(--warn); border-color:var(--warn); }
+
+  .caption {
+    position:absolute; bottom: 130px; left:50%; transform:translateX(-50%);
+    font-size:12px; color:var(--ink-dim); font-family:var(--mono);
+    background:rgba(6,10,16,0.7); padding:5px 12px; border-radius:6px; z-index:9;
+    text-align:center;
+  }
+</style>
+</head>
+<body>
+  <div class="stage">
+    <div class="scene" id="scene">
+      <img class="bg" src="underpass_photo.png" alt="성정지하차도 진입부" />
+      <div class="water" id="water"><div class="ripple"></div></div>
+      <div class="control-line" id="controlLine"><span class="cl-label">통제기준 5cm</span></div>
+      <div class="level-tag" id="levelTag">0cm</div>
+
+      <div class="status-banner">
+        <div>
+          <div class="title">성정지하차도 · 실제 진입부</div>
+          <div class="sub">충남 천안시 서북구 성정동 609-199</div>
+        </div>
+        <div class="status-badge" id="badge">통행 가능</div>
+      </div>
+
+      <div class="blocked-overlay" id="blockedOverlay">
+        <div class="bo-text">🚫 통행 불가</div>
+      </div>
+
+      <div class="caption" id="caption">실제 로드뷰 · 2025.7.17 이 지하차도가 침수되어 통제됨</div>
+    </div>
+
+    <div class="controls">
+      <div class="ctrl-top">
+        <div class="ctrl-metrics">
+          <div class="cm"><div class="k">현재 수위</div><div class="v" id="mLevel">0<small>cm</small></div></div>
+          <div class="cm"><div class="k">순변화</div><div class="v" id="mNet">0<small>cm/분</small></div></div>
+          <div class="cm"><div class="k">통제까지</div><div class="v" id="mTime">—</div></div>
+        </div>
+      </div>
+      <div class="rain-row">
+        <label>강수량</label>
+        <input type="range" id="rain" min="0" max="100" value="30" />
+        <span id="rainVal">30 mm/h</span>
+      </div>
+      <div class="btns">
+        <button class="btn play" id="btnPlay">▶ 시작</button>
+        <button class="btn" id="btnReset">↺ 리셋</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+  // ── 침수 예측 모델 (Cesium 시뮬과 동일 파라미터) ──
+  const CFG = {
+    regionCoef: 0.07, ageFactor: 1 + 41/50,
+    drainRate: 4.7 * 0.6,      // 2.8 cm/min
+    controlCm: 5, limitCm: 250,
+  };
+  CFG.breakeven = CFG.drainRate / (CFG.regionCoef * CFG.ageFactor);
+
+  function predict(rain, cm) {
+    const inflow = rain * CFG.regionCoef * CFG.ageFactor;
+    const drain = cm > 0 ? CFG.drainRate : 0;
+    const net = inflow - drain;
+    const controlled = cm >= CFG.controlCm;
+    let timeToControl = Infinity;
+    if (net > 0.001 && !controlled) timeToControl = (CFG.controlCm - cm) / net;
+    return { inflow, net, controlled, timeToControl };
+  }
+
+  // ── 물 시각화 스케일 ──
+  // 사진에서 지하차도 입구(터널)~도로 부분. 물이 이 범위에서 차오름.
+  // 5cm(통제)를 화면 하단 30% 지점, 완전침수를 62%(터널 상단)로 매핑
+  const WATER_MIN = 6;    // 물 최소 표시 높이(%)
+  const WATER_5CM = 30;   // 5cm 통제선 위치(%)
+  const WATER_MAX = 62;   // 완전침수(터널 입구 잠김)(%)
+
+  function visHeight(cm) {
+    if (cm <= 0) return 0;
+    if (cm <= CFG.controlCm) {
+      return WATER_MIN + (cm / CFG.controlCm) * (WATER_5CM - WATER_MIN);
+    }
+    const upper = (cm - CFG.controlCm) / (CFG.limitCm - CFG.controlCm);
+    return WATER_5CM + upper * (WATER_MAX - WATER_5CM);
+  }
+
+  const els = {
+    water: document.getElementById("water"),
+    levelTag: document.getElementById("levelTag"),
+    controlLine: document.getElementById("controlLine"),
+    badge: document.getElementById("badge"),
+    blockedOverlay: document.getElementById("blockedOverlay"),
+    mLevel: document.getElementById("mLevel"),
+    mNet: document.getElementById("mNet"),
+    mTime: document.getElementById("mTime"),
+    rain: document.getElementById("rain"),
+    rainVal: document.getElementById("rainVal"),
+    btnPlay: document.getElementById("btnPlay"),
+    btnReset: document.getElementById("btnReset"),
+    caption: document.getElementById("caption"),
+  };
+
+  const sim = { rain: 30, cm: 0, playing: false, last: null };
+
+  // 통제선 위치 고정 (5cm = WATER_5CM%)
+  els.controlLine.style.bottom = WATER_5CM + "%";
+
+  function fmtTime(min) {
+    const m = Math.round(min);
+    if (!isFinite(m)) return "—";
+    if (m < 60) return m + "<small>분</small>";
+    return Math.floor(m/60) + "<small>시간</small> " + (m%60) + "<small>분</small>";
+  }
+
+  function update() {
+    const r = predict(sim.rain, sim.cm);
+    const h = visHeight(sim.cm);
+
+    els.water.style.height = h + "%";
+    els.levelTag.style.bottom = "calc(" + h + "% - 12px)";
+    els.levelTag.textContent = sim.cm.toFixed(1) + "cm";
+    els.levelTag.classList.toggle("warn", r.controlled);
+
+    els.rainVal.textContent = sim.rain + " mm/h" +
+      (sim.rain >= 30 ? " · 호우주의보" : (sim.rain >= CFG.breakeven ? " · 배수한계↑" : ""));
+    els.mLevel.innerHTML = sim.cm.toFixed(1) + "<small>cm</small>";
+    els.mLevel.classList.toggle("alert", r.controlled);
+    const sign = r.net >= 0 ? "+" : "";
+    els.mNet.innerHTML = sign + r.net.toFixed(1) + "<small>cm/분</small>";
+
+    if (r.controlled) {
+      els.mTime.innerHTML = "<span style='color:#f43f5e'>통행불가</span>";
+      els.badge.textContent = "🚫 통행 불가";
+      els.badge.classList.add("blocked");
+      els.blockedOverlay.classList.add("show");
+      els.caption.textContent = "수위 5cm 초과 · 실제 2025.7.17처럼 통행 전면 통제";
+    } else {
+      els.mTime.innerHTML = (r.net > 0 && isFinite(r.timeToControl)) ? fmtTime(r.timeToControl) : "—";
+      els.badge.textContent = "통행 가능";
+      els.badge.classList.remove("blocked");
+      els.blockedOverlay.classList.remove("show");
+      els.caption.textContent = "실제 로드뷰 · 2025.7.17 이 지하차도가 침수되어 통제됨";
+    }
+  }
+
+  function tick(now) {
+    if (!sim.playing) return;
+    if (sim.last == null) sim.last = now;
+    let dt = (now - sim.last) / 1000;
+    sim.last = now;
+    dt = Math.min(dt, 0.1);       // 프레임 점프 방지
+    const r = predict(sim.rain, sim.cm);
+    sim.cm = Math.max(0, Math.min(CFG.limitCm, sim.cm + r.net * dt));  // 1초=1분
+    update();
+    requestAnimationFrame(tick);
+  }
+
+  els.rain.addEventListener("input", e => { sim.rain = +e.target.value; update(); });
+  els.btnPlay.addEventListener("click", () => {
+    sim.playing = !sim.playing;
+    if (sim.playing) {
+      sim.last = null;
+      els.btnPlay.textContent = "❚❚ 일시정지";
+      els.btnPlay.classList.add("playing");
+      requestAnimationFrame(tick);
+    } else {
+      els.btnPlay.textContent = "▶ 계속";
+      els.btnPlay.classList.remove("playing");
+    }
+  });
+  els.btnReset.addEventListener("click", () => {
+    sim.playing = false; sim.cm = 0;
+    els.btnPlay.textContent = "▶ 시작";
+    els.btnPlay.classList.remove("playing");
+    update();
+  });
+
+  update();
+</script>
+</body>
+</html>
